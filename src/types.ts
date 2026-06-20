@@ -64,7 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ollamaApiKey: '',
   ollamaProxyUrl: '',
   ollamaTextModel: 'glm-4.7',
-  ollamaVisionModel: 'kimi-k2.5',
+  ollamaVisionModel: 'gemini-3-flash-preview',
   elevenLabsKey: '',
   elevenLabsVoiceId: 'EXAVITQu4vr4xnSDxMaL',
 };
@@ -89,12 +89,23 @@ export const OLLAMA_CLOUD_TEXT_MODELS = [
   { id: 'minimax-m2.1:cloud', name: 'MiniMax M2.1', tag: 'Fast cloud' },
 ] as const;
 
+/** Verified vision-capable models on Ollama Cloud (tested via proxy). */
 export const OLLAMA_CLOUD_VISION_MODELS = [
-  { id: 'gemma4:12b', name: 'Gemma 4 12B', tag: 'Best all-round vision' },
-  { id: 'kimi-k2.5:cloud', name: 'Kimi K2.5', tag: 'Native multimodal' },
-  { id: 'qwen3.5:27b', name: 'Qwen 3.5 27B', tag: 'Strong vision + tools' },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', tag: 'Frontier speed' },
-  { id: 'minimax-m3:cloud', name: 'MiniMax M3', tag: '1M context vision' },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', tag: 'Fast · clean JSON · recommended' },
+  { id: 'kimi-k2.5', name: 'Kimi K2.5', tag: 'Native multimodal' },
+  { id: 'gemma4:31b', name: 'Gemma 4 31B', tag: 'Strong all-round vision' },
+  { id: 'kimi-k2.6', name: 'Kimi K2.6', tag: 'Agentic multimodal' },
+  { id: 'gemma3:12b', name: 'Gemma 3 12B', tag: 'Reliable · lighter' },
+  { id: 'minimax-m3', name: 'MiniMax M3', tag: '1M context · slower' },
+  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code', tag: 'Vision + coding' },
+] as const;
+
+export const OLLAMA_CLOUD_VISION_FALLBACKS = [
+  'gemini-3-flash-preview',
+  'kimi-k2.5',
+  'gemma4:31b',
+  'kimi-k2.6',
+  'gemma3:12b',
 ] as const;
 
 export const OLLAMA_LOCAL_TEXT_MODELS = [

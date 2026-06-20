@@ -1,11 +1,17 @@
 import { useLocalStorage } from './useLocalStorage';
-import { DEFAULT_SETTINGS, type Settings } from '../types';
+import { DEFAULT_SETTINGS, OLLAMA_CLOUD_VISION_MODELS, type Settings } from '../types';
 import { activeProviderLabel, effectiveProxyUrl, withEffectiveProxy } from '../lib/providers';
 
-/** Merge saved settings with defaults so new fields appear after updates. */
+const VALID_CLOUD_VISION = new Set(OLLAMA_CLOUD_VISION_MODELS.map(m => m.id));
+
+/** Merge saved settings with defaults; fix outdated model names from older app versions. */
 function mergeSettings(saved: Partial<Settings> | null): Settings {
   if (!saved || typeof saved !== 'object') return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...saved };
+  const merged = { ...DEFAULT_SETTINGS, ...saved };
+  if (!VALID_CLOUD_VISION.has(merged.ollamaVisionModel as typeof OLLAMA_CLOUD_VISION_MODELS[number]['id'])) {
+    merged.ollamaVisionModel = DEFAULT_SETTINGS.ollamaVisionModel;
+  }
+  return merged;
 }
 
 export function useSettings() {

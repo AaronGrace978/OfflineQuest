@@ -1,5 +1,5 @@
 import type { Settings } from '../types';
-import { OLLAMA_PROXY_URL } from '../types';
+import { OLLAMA_PROXY_URL, OLLAMA_CLOUD_VISION_FALLBACKS, OLLAMA_CLOUD_VISION_MODELS } from '../types';
 
 const OPENAI_CHAT = 'https://api.openai.com/v1/chat/completions';
 const OLLAMA_CLOUD = 'https://ollama.com/api';
@@ -68,8 +68,9 @@ export function resolveProvider(settings: Settings, task: AiTask): ResolvedProvi
   if (pref === 'ollama-cloud') return hasOllamaCloud(s) ? 'ollama-cloud' : null;
   if (pref === 'ollama-local') return 'ollama-local';
 
-  // Auto: vision prefers OpenAI (reliable), then Ollama cloud vision, then local
+  // Auto vision: on GitHub Pages prefer Ollama (proxy configured), else OpenAI, else local
   if (task === 'vision') {
+    if (isHostedApp() && hasOllamaCloud(s)) return 'ollama-cloud';
     if (hasOpenAi(s)) return 'openai';
     if (hasOllamaCloud(s)) return 'ollama-cloud';
     if (wantsOllamaLocal(s)) return 'ollama-local';
@@ -203,33 +204,56 @@ export async function chatVisionJson<T>(
   userText: string,
   imageDataUrl: string,
 ): Promise<JsonResult<T> | null> {
-  const provider = resolveProvider(settings, 'vision');
+  const s = withEffectiveProxy(settings);
+  const provider = resolveProvider(s, 'vision');
   if (!provider) return null;
 
   const b64 = dataUrlToBase64(imageDataUrl);
 
-  try {
-    let raw: string;
-    let label: string;
-    if (provider === 'openai') {
-      raw = await openAiVision(settings, settings.openAiVisionModel, system, userText, imageDataUrl);
-      label = `OpenAI · ${settings.openAiVisionModel}`;
-    } else {
-      const model = settings.ollamaVisionModel;
-      raw = await ollamaVision(settings, provider, model, system, userText, b64);
-      label = `${labelFor(provider)} · ${model}`;
+  if (provider === 'openai') {
+    try {
+      const raw = await openAiVision(s, s.openAiVisionModel, system, userText, imageDataUrl);
+      return { data: parseJson<T>(raw), provider: `OpenAI · ${s.openAiVisionModel}` };
+    } catch (err) {
+      console.warn('OpenAI vision failed:', err);
+      if (s.aiProvider === 'auto' && hasOllamaCloud(s)) {
+        return ollamaVisionWithFallback<T>(s, system, userText, b64);
+      }
+      throw err;
     }
-    return { data: parseJson<T>(raw), provider: label };
-  } catch (err) {
-    console.warn(`chatVisionJson failed (${provider}):`, err);
-    if (settings.aiProvider === 'auto' && provider !== 'openai' && hasOpenAi(settings)) {
-      try {
-        const raw = await openAiVision(settings, settings.openAiVisionModel, system, userText, imageDataUrl);
-        return { data: parseJson<T>(raw), provider: `OpenAI · ${settings.openAiVisionModel}` };
-      } catch { /* fall through */ }
-    }
-    throw err;
   }
+
+  if (provider === 'ollama-local') {
+    const raw = await ollamaVision(s, 'ollama-local', s.ollamaVisionModel, system, userText, b64);
+    return { data: parseJson<T>(raw), provider: `Ollama Local · ${s.ollamaVisionModel}` };
+  }
+
+  return ollamaVisionWithFallback<T>(s, system, userText, b64);
+}
+
+async function ollamaVisionWithFallback<T>(
+  settings: Settings,
+  system: string,
+  userText: string,
+  imageBase64: string,
+): Promise<JsonResult<T>> {
+  const validIds = new Set(OLLAMA_CLOUD_VISION_MODELS.map(m => m.id));
+  const preferred = validIds.has(settings.ollamaVisionModel as typeof OLLAMA_CLOUD_VISION_MODELS[number]['id'])
+    ? settings.ollamaVisionModel
+    : 'gemini-3-flash-preview';
+  const models = [preferred, ...OLLAMA_CLOUD_VISION_FALLBACKS.filter(m => m !== preferred)];
+
+  let lastError: Error | null = null;
+  for (const model of models) {
+    try {
+      const raw = await ollamaVision(settings, 'ollama-cloud', model, system, userText, imageBase64);
+      return { data: parseJson<T>(raw), provider: `Ollama Cloud · ${model}` };
+    } catch (err) {
+      lastError = err as Error;
+      console.warn(`Ollama vision failed (${model}):`, err);
+    }
+  }
+  throw lastError ?? new Error('All Ollama vision models failed');
 }
 
 /** Ping Ollama to verify connectivity */
@@ -460,7 +484,9 @@ function dataUrlToBase64(dataUrl: string): string {
 }
 
 function parseJson<T>(raw: string): T {
-  const trimmed = raw.trim();
+  let trimmed = raw.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) trimmed = fenced[1].trim();
   try {
     return JSON.parse(trimmed) as T;
   } catch {
