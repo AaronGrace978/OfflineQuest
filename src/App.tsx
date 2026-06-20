@@ -706,11 +706,11 @@ function SettingsScreen({
             <span className="text-sm font-semibold text-white">🎙️ ElevenLabs voice</span>
             <Badge ok={hasElevenLabs} />
           </div>
-          <Field label="API key" hint="Ultra-realistic voice. Without it, device voice is used.">
+          <Field label="API key" hint="From elevenlabs.io → Profile → API Keys. Enable: Text to Speech, Voices (Read), User (Read).">
             <input
               type="password" value={settings.elevenLabsKey}
-              onChange={e => update({ elevenLabsKey: e.target.value })}
-              placeholder="..." className="oq-input" autoComplete="off"
+              onChange={e => update({ elevenLabsKey: e.target.value.replace(/\s+/g, '') })}
+              placeholder="Paste key only — no spaces" className="oq-input" autoComplete="off"
             />
           </Field>
           <Field label="Voice">
@@ -728,8 +728,17 @@ function SettingsScreen({
           </Field>
           <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer"
             className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
-            Get ElevenLabs key ↗
+            Get / manage ElevenLabs key ↗
           </a>
+          <button
+            onClick={async () => {
+              const r = await testElevenLabsConnection(settings);
+              showStatus(r.ok, r.message);
+            }}
+            className="text-xs text-white/60 hover:text-white w-full text-left"
+          >
+            Test ElevenLabs connection
+          </button>
         </div>
 
         <div className="glass rounded-2xl p-4 flex items-center justify-between">

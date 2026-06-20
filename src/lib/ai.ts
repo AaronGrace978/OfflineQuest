@@ -1,5 +1,6 @@
 import type { Mission, MoodLevel, Settings } from '../types';
 import { chatText, chatJson, chatVisionJson } from './providers';
+import { sanitizeApiKey, readElevenLabsError } from './apiKeys';
 
 const ELEVEN_TTS = 'https://api.elevenlabs.io/v1/text-to-speech';
 
@@ -143,20 +144,24 @@ export async function speak(
   stopSpeaking();
 
   if (settings.elevenLabsKey.trim()) {
+    const apiKey = sanitizeApiKey(settings.elevenLabsKey);
     try {
       const res = await fetch(`${ELEVEN_TTS}/${settings.elevenLabsVoiceId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'xi-api-key': settings.elevenLabsKey.trim(),
+          'xi-api-key': apiKey,
         },
         body: JSON.stringify({
           text,
-          model_id: 'eleven_multilingual_v2',
+          model_id: 'eleven_turbo_v2_5',
           voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.3 },
         }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      if (!res.ok) {
+        const msg = await readElevenLabsError(res);
+        throw new Error(msg);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
@@ -182,14 +187,5 @@ export async function speak(
     utter.onstart = () => onState?.(true);
     utter.onend = () => onState?.(false);
     window.speechSynthesis.speak(utter);
-  }
-}
-
-async function readError(res: Response): Promise<string> {
-  try {
-    const data = await res.json();
-    return data?.error?.message || data?.detail?.message || `HTTP ${res.status}`;
-  } catch {
-    return `HTTP ${res.status}`;
   }
 }

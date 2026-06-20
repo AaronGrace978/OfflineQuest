@@ -1,4 +1,5 @@
 import type { Settings } from '../types';
+import { sanitizeApiKey, readElevenLabsError } from './apiKeys';
 import { OLLAMA_PROXY_URL, OLLAMA_CLOUD_VISION_FALLBACKS, OLLAMA_CLOUD_VISION_MODELS } from '../types';
 
 const OPENAI_CHAT = 'https://api.openai.com/v1/chat/completions';
@@ -331,20 +332,54 @@ export async function testOpenAiConnection(settings: Settings): Promise<{ ok: bo
   }
 }
 
-/** Quick ElevenLabs key check */
+/** Quick ElevenLabs key check — hits /v1/user then a tiny TTS sample. */
 export async function testElevenLabsConnection(settings: Settings): Promise<{ ok: boolean; message: string }> {
-  if (!settings.elevenLabsKey.trim()) {
+  const apiKey = sanitizeApiKey(settings.elevenLabsKey);
+  if (!apiKey) {
     return { ok: false, message: 'No ElevenLabs key entered.' };
   }
+
   try {
-    const res = await fetch('https://api.elevenlabs.io/v1/user', {
-      headers: { 'xi-api-key': settings.elevenLabsKey.trim() },
+    const userRes = await fetch('https://api.elevenlabs.io/v1/user', {
+      headers: { 'xi-api-key': apiKey },
     });
-    if (res.status === 401) return { ok: false, message: 'Invalid ElevenLabs key.' };
-    if (res.ok) return { ok: true, message: 'ElevenLabs connected ✓' };
-    return { ok: false, message: `ElevenLabs error: HTTP ${res.status}` };
+    if (userRes.status === 401) {
+      const msg = await readElevenLabsError(userRes);
+      return {
+        ok: false,
+        message: `${msg}. Create a new key at elevenlabs.io with Text to Speech + Voices (Read) + User (Read) enabled.`,
+      };
+    }
+    if (!userRes.ok) {
+      return { ok: false, message: `ElevenLabs error: HTTP ${userRes.status}` };
+    }
+
+    const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${settings.elevenLabsVoiceId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'xi-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        text: 'Hello',
+        model_id: 'eleven_turbo_v2_5',
+      }),
+    });
+    if (ttsRes.status === 401) {
+      const msg = await readElevenLabsError(ttsRes);
+      return { ok: false, message: `${msg} — enable Text to Speech permission on your key.` };
+    }
+    if (ttsRes.status === 403) {
+      return { ok: false, message: 'Key blocked (403) — check IP whitelist or key permissions.' };
+    }
+    if (!ttsRes.ok) {
+      const msg = await readElevenLabsError(ttsRes);
+      return { ok: false, message: msg };
+    }
+
+    return { ok: true, message: 'ElevenLabs connected — voice ready ✓' };
   } catch {
-    return { ok: false, message: 'Cannot reach ElevenLabs.' };
+    return { ok: false, message: 'Cannot reach ElevenLabs — check connection or ad-blocker.' };
   }
 }
 
