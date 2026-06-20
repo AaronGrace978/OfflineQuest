@@ -12,7 +12,7 @@ import {
   OLLAMA_LOCAL_TEXT_MODELS, OLLAMA_LOCAL_VISION_MODELS,
   OPENAI_TEXT_MODELS, OPENAI_VISION_MODELS,
 } from './types';
-import { testOllamaConnection } from './lib/providers';
+import { testOllamaConnection, testOpenAiConnection, testElevenLabsConnection } from './lib/providers';
 import {
   Background, MoodPicker, MissionCard, Timer, MOOD_OPTIONS, moodDelta,
   PrimaryButton, GhostButton,
@@ -450,7 +450,9 @@ function SettingsScreen({
 }) {
   const [testingVoice, setTestingVoice] = useState(false);
   const [testingOllama, setTestingOllama] = useState<'cloud' | 'local' | null>(null);
-  const [ollamaStatus, setOllamaStatus] = useState<string | null>(null);
+  const [testingAll, setTestingAll] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [statusOk, setStatusOk] = useState(false);
 
   const testVoice = async () => {
     setTestingVoice(true);
@@ -458,12 +460,46 @@ function SettingsScreen({
     setTimeout(() => setTestingVoice(false), 1200);
   };
 
+  const showStatus = (ok: boolean, message: string) => {
+    setStatusOk(ok);
+    setStatusMsg(message);
+  };
+
   const testOllama = async (host: 'cloud' | 'local') => {
     setTestingOllama(host);
-    setOllamaStatus(null);
-    const r = await testOllamaConnection(host, settings.ollamaApiKey);
-    setOllamaStatus(r.message);
+    setStatusMsg(null);
+    const r = await testOllamaConnection(settings, host);
+    showStatus(r.ok, r.message);
     setTestingOllama(null);
+  };
+
+  const testAll = async () => {
+    setTestingAll(true);
+    setStatusMsg(null);
+    const parts: string[] = [];
+    let anyOk = false;
+
+    if (settings.openAiKey.trim()) {
+      const r = await testOpenAiConnection(settings);
+      parts.push(r.message);
+      if (r.ok) anyOk = true;
+    }
+    if (settings.elevenLabsKey.trim()) {
+      const r = await testElevenLabsConnection(settings);
+      parts.push(r.message);
+      if (r.ok) anyOk = true;
+    }
+    if (settings.ollamaApiKey.trim() || settings.ollamaProxyUrl.trim()) {
+      const r = await testOllamaConnection(settings, 'cloud');
+      parts.push(r.message);
+      if (r.ok) anyOk = true;
+    }
+    if (!parts.length) {
+      showStatus(false, 'No API keys entered yet — paste keys below, then tap Test all.');
+    } else {
+      showStatus(anyOk, parts.join(' · '));
+    }
+    setTestingAll(false);
   };
 
   const showOpenAi = settings.aiProvider === 'openai' || settings.aiProvider === 'auto';
@@ -475,7 +511,15 @@ function SettingsScreen({
       <BackBtn onClick={onBack} />
       <h2 className="font-display text-3xl font-semibold text-white mt-4 mb-1">AI & Voice</h2>
       <p className="text-white/50 text-sm mb-1">Keys stay on this device only.</p>
-      <p className="text-emerald-300/70 text-xs mb-5">Active: {providerSummary}</p>
+      <p className="text-emerald-300/70 text-xs mb-4">Active: {providerSummary}</p>
+
+      <div className="glass rounded-2xl p-4 mb-4 border border-amber-300/20 bg-amber-400/5">
+        <p className="text-sm font-semibold text-amber-100 mb-1">📱 Using GitHub Pages?</p>
+        <p className="text-[11px] text-white/55 leading-relaxed">
+          Paste API keys <strong className="text-white/80">here in the app</strong> — not in GitHub repo Secrets (those don't reach the website).
+          OpenAI &amp; ElevenLabs work directly. Ollama Cloud needs the proxy URL below.
+        </p>
+      </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar space-y-5 pb-6">
         <Field label="Your name (optional)" hint="Personalizes affirmations">
@@ -524,6 +568,14 @@ function SettingsScreen({
                 type="password" value={settings.ollamaApiKey}
                 onChange={e => update({ ollamaApiKey: e.target.value })}
                 placeholder="..." className="oq-input" autoComplete="off"
+              />
+            </Field>
+            <Field label="Proxy URL (for GitHub Pages)" hint="Deploy worker/ folder to Cloudflare — paste URL like https://your-worker.workers.dev">
+              <input
+                value={settings.ollamaProxyUrl}
+                onChange={e => update({ ollamaProxyUrl: e.target.value })}
+                placeholder="https://offlinequest-ollama-proxy.xxx.workers.dev"
+                className="oq-input"
               />
             </Field>
             <ModelSelect
@@ -595,11 +647,16 @@ function SettingsScreen({
           </div>
         )}
 
-        {ollamaStatus && (
-          <p className={`text-xs px-3 py-2 rounded-xl ${ollamaStatus.includes('connected') || ollamaStatus.includes('found') ? 'bg-emerald-400/10 text-emerald-300' : 'bg-rose-400/10 text-rose-300'}`}>
-            {ollamaStatus}
+        {statusMsg && (
+          <p className={`text-xs px-3 py-2 rounded-xl ${statusOk ? 'bg-emerald-400/10 text-emerald-300' : 'bg-rose-400/10 text-rose-300'}`}>
+            {statusMsg}
           </p>
         )}
+
+        <button onClick={testAll} disabled={testingAll}
+          className="w-full py-3 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 text-sm font-semibold hover:bg-emerald-500/30 disabled:opacity-50">
+          {testingAll ? 'Testing connections…' : '🔌 Test all connections'}
+        </button>
 
         {/* ── OpenAI ── */}
         {showOpenAi && (
@@ -631,6 +688,15 @@ function SettingsScreen({
               className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
               Get OpenAI key ↗
             </a>
+            <button
+              onClick={async () => {
+                const r = await testOpenAiConnection(settings);
+                showStatus(r.ok, r.message);
+              }}
+              className="text-xs text-white/60 hover:text-white w-full text-left"
+            >
+              Test OpenAI connection
+            </button>
           </div>
         )}
 

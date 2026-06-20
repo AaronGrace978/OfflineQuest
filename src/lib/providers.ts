@@ -210,29 +210,94 @@ export async function chatVisionJson<T>(
 
 /** Ping Ollama to verify connectivity */
 export async function testOllamaConnection(
+  settings: Settings,
   host: 'cloud' | 'local',
-  apiKey?: string,
 ): Promise<{ ok: boolean; message: string }> {
-  const base = host === 'cloud' ? OLLAMA_CLOUD : OLLAMA_LOCAL;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (host === 'cloud' && apiKey?.trim()) {
-    headers.Authorization = `Bearer ${apiKey.trim()}`;
+  if (host === 'cloud' && isHostedApp() && !settings.ollamaProxyUrl.trim()) {
+    return {
+      ok: false,
+      message: 'Ollama Cloud is blocked by browser security on GitHub Pages. Add a proxy URL below, or use OpenAI instead.',
+    };
   }
+
+  const base = host === 'cloud'
+    ? (settings.ollamaProxyUrl.trim().replace(/\/$/, '') || OLLAMA_CLOUD.replace(/\/api$/, ''))
+    : OLLAMA_LOCAL.replace(/\/api$/, '');
+  const path = host === 'cloud' && settings.ollamaProxyUrl.trim() ? '/api/tags' : '/api/tags';
+  const url = `${base}${path}`;
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (host === 'cloud' && settings.ollamaApiKey.trim()) {
+    headers.Authorization = `Bearer ${settings.ollamaApiKey.trim()}`;
+  }
+
   try {
-    const res = await fetch(`${base}/tags`, { headers });
+    const res = await fetch(url, { headers });
     if (!res.ok) {
       if (host === 'local') {
         return { ok: false, message: 'Ollama not running. Install from ollama.com and run `ollama serve`.' };
       }
-      return { ok: false, message: `HTTP ${res.status} — check your API key.` };
+      return { ok: false, message: `HTTP ${res.status} — check your API key or proxy URL.` };
     }
     const data = await res.json();
     const count = data?.models?.length ?? 0;
-    return { ok: true, message: host === 'cloud' ? 'Ollama Cloud connected' : `${count} local model(s) found` };
-  } catch {
+    return {
+      ok: true,
+      message: host === 'cloud'
+        ? 'Ollama Cloud connected via proxy'
+        : `${count} local model(s) found`,
+    };
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (host === 'cloud' && msg.includes('fetch')) {
+      return { ok: false, message: 'Cannot reach Ollama — check proxy URL or use OpenAI on GitHub Pages.' };
+    }
     return host === 'local'
-      ? { ok: false, message: 'Cannot reach localhost:11434 — is Ollama running?' }
-      : { ok: false, message: 'Cannot reach ollama.com — check your connection.' };
+      ? { ok: false, message: 'Cannot reach localhost:11434 — is Ollama running on this device?' }
+      : { ok: false, message: 'Cannot reach Ollama — check proxy URL and API key.' };
+  }
+}
+
+/** Quick OpenAI key check */
+export async function testOpenAiConnection(settings: Settings): Promise<{ ok: boolean; message: string }> {
+  if (!settings.openAiKey.trim()) {
+    return { ok: false, message: 'No OpenAI key entered.' };
+  }
+  try {
+    const res = await fetch(OPENAI_CHAT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.openAiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        model: settings.openAiTextModel,
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    });
+    if (res.status === 401) return { ok: false, message: 'Invalid OpenAI key.' };
+    if (res.ok || res.status === 400) return { ok: true, message: 'OpenAI connected — works on GitHub Pages ✓' };
+    return { ok: false, message: `OpenAI error: HTTP ${res.status}` };
+  } catch {
+    return { ok: false, message: 'Cannot reach OpenAI — check connection or ad-blocker.' };
+  }
+}
+
+/** Quick ElevenLabs key check */
+export async function testElevenLabsConnection(settings: Settings): Promise<{ ok: boolean; message: string }> {
+  if (!settings.elevenLabsKey.trim()) {
+    return { ok: false, message: 'No ElevenLabs key entered.' };
+  }
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/user', {
+      headers: { 'xi-api-key': settings.elevenLabsKey.trim() },
+    });
+    if (res.status === 401) return { ok: false, message: 'Invalid ElevenLabs key.' };
+    if (res.ok) return { ok: true, message: 'ElevenLabs connected ✓' };
+    return { ok: false, message: `ElevenLabs error: HTTP ${res.status}` };
+  } catch {
+    return { ok: false, message: 'Cannot reach ElevenLabs.' };
   }
 }
 
@@ -299,8 +364,17 @@ async function openAiVision(
 
 // ── Ollama (cloud + local) ──────────────────────────────────────
 
-function ollamaBase(provider: 'ollama-cloud' | 'ollama-local') {
-  return provider === 'ollama-cloud' ? OLLAMA_CLOUD : OLLAMA_LOCAL;
+function ollamaBase(settings: Settings, provider: 'ollama-cloud' | 'ollama-local') {
+  if (provider === 'ollama-local') return OLLAMA_LOCAL;
+  const proxy = settings.ollamaProxyUrl.trim().replace(/\/$/, '');
+  if (proxy) return `${proxy}/api`;
+  return OLLAMA_CLOUD;
+}
+
+function isHostedApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  return h.includes('github.io') || h.includes('pages.dev');
 }
 
 function ollamaHeaders(settings: Settings, provider: 'ollama-cloud' | 'ollama-local') {
@@ -318,7 +392,7 @@ async function ollamaChat(
   messages: ChatMessage[],
   opts?: { temperature?: number; jsonMode?: boolean },
 ): Promise<string> {
-  const res = await fetch(`${ollamaBase(provider)}/chat`, {
+  const res = await fetch(`${ollamaBase(settings, provider)}/chat`, {
     method: 'POST',
     headers: ollamaHeaders(settings, provider),
     body: JSON.stringify({
@@ -342,7 +416,7 @@ async function ollamaVision(
   userText: string,
   imageBase64: string,
 ): Promise<string> {
-  const res = await fetch(`${ollamaBase(provider)}/chat`, {
+  const res = await fetch(`${ollamaBase(settings, provider)}/chat`, {
     method: 'POST',
     headers: ollamaHeaders(settings, provider),
     body: JSON.stringify({

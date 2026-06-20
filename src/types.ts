@@ -45,6 +45,8 @@ export interface Settings {
   openAiVisionModel: string;
   /** Ollama Cloud (ollama.com) or local (localhost:11434) */
   ollamaApiKey: string;
+  /** Cloudflare Worker URL — required for Ollama on GitHub Pages (CORS) */
+  ollamaProxyUrl: string;
   ollamaTextModel: string;
   ollamaVisionModel: string;
   /** ElevenLabs TTS */
@@ -60,6 +62,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openAiTextModel: 'gpt-4o-mini',
   openAiVisionModel: 'gpt-4o',
   ollamaApiKey: '',
+  ollamaProxyUrl: '',
   ollamaTextModel: 'gemma4:12b',
   ollamaVisionModel: 'gemma4:12b',
   elevenLabsKey: '',
