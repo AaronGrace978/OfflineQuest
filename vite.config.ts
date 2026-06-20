@@ -3,9 +3,10 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
-// Served from https://aarongrace978.github.io/offlinequest/ in production,
-// but from "/" during local dev.
-const base = process.env.NODE_ENV === 'production' ? '/offlinequest/' : '/'
+// Served from https://aarongrace978.github.io/OfflineQuest/ in production
+// (the path is case-sensitive and must match the repo name), but from "/"
+// during local dev.
+const base = process.env.NODE_ENV === 'production' ? '/OfflineQuest/' : '/'
 
 export default defineConfig({
   base,
