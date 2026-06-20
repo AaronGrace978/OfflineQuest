@@ -1,24 +1,21 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
   --color-forest-50: #f0fdf4;
   --color-forest-100: #dcfce7;
   --color-forest-200: #bbf7d0;
+  --color-forest-300: #86efac;
   --color-forest-400: #4ade80;
   --color-forest-500: #22c55e;
   --color-forest-600: #16a34a;
   --color-forest-700: #15803d;
   --color-forest-800: #166534;
   --color-forest-900: #14532d;
-  --color-earth-50: #fdf8f0;
-  --color-earth-100: #fef3c7;
-  --color-earth-200: #fde68a;
-  --color-earth-600: #d97706;
-  --color-earth-700: #b45309;
-  --color-sky-50: #f0f9ff;
-  --color-sky-100: #e0f2fe;
-  --color-sky-400: #38bdf8;
-  --color-sky-600: #0284c7;
+  --color-forest-950: #052e16;
+
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-sans: 'Inter', system-ui, sans-serif;
 }
 
 * {
@@ -32,35 +29,114 @@ html, body, #root {
 }
 
 body {
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overscroll-behavior-y: none;
   -webkit-tap-highlight-color: transparent;
+  background: #0a1f14;
 }
 
-/* Respect notches / home indicators on mobile */
-.safe-top {
-  padding-top: max(2rem, env(safe-area-inset-top));
-}
-.safe-bottom {
-  padding-bottom: max(2rem, env(safe-area-inset-bottom));
+.font-display {
+  font-family: 'Fraunces', Georgia, serif;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(12px); }
-  to   { opacity: 1; transform: translateY(0); }
+/* ── Safe areas ─────────────────────────────────────── */
+.safe-top    { padding-top: max(1rem, env(safe-area-inset-top)); }
+.safe-bottom { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+
+/* ── Glassmorphism ──────────────────────────────────── */
+.glass {
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.glass-dark {
+  background: rgba(8, 24, 16, 0.45);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-@keyframes pulse-ring {
-  0%   { transform: scale(1);   opacity: 0.8; }
-  50%  { transform: scale(1.08); opacity: 0.4; }
-  100% { transform: scale(1);   opacity: 0.8; }
+/* ── Living gradient background ─────────────────────── */
+.aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+}
+.aurora::before,
+.aurora::after {
+  content: '';
+  position: absolute;
+  width: 80vmax;
+  height: 80vmax;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.55;
+  will-change: transform;
+}
+.aurora::before {
+  background: radial-gradient(circle at center, #22c55e, transparent 60%);
+  top: -20%;
+  left: -20%;
+  animation: drift1 18s ease-in-out infinite alternate;
+}
+.aurora::after {
+  background: radial-gradient(circle at center, #0ea5e9, transparent 60%);
+  bottom: -25%;
+  right: -20%;
+  animation: drift2 22s ease-in-out infinite alternate;
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.4s ease both;
+@keyframes drift1 {
+  0%   { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(15vw, 12vh) scale(1.25); }
+}
+@keyframes drift2 {
+  0%   { transform: translate(0, 0) scale(1.1); }
+  100% { transform: translate(-12vw, -10vh) scale(0.85); }
 }
 
-.animate-pulse-ring {
-  animation: pulse-ring 2.5s ease-in-out infinite;
+/* ── Breathing pulse ────────────────────────────────── */
+@keyframes breathe {
+  0%, 100% { transform: scale(1);    opacity: 0.9; }
+  50%      { transform: scale(1.08); opacity: 1; }
 }
+.animate-breathe { animation: breathe 4s ease-in-out infinite; }
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8px); }
+}
+.animate-float { animation: float 5s ease-in-out infinite; }
+
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.shimmer-text {
+  background: linear-gradient(90deg, #bbf7d0 20%, #fff 50%, #bbf7d0 80%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 4s linear infinite;
+}
+
+/* ── Soundwave (voice playing) ──────────────────────── */
+.wave-bar {
+  width: 3px;
+  border-radius: 3px;
+  background: currentColor;
+  animation: wave 1s ease-in-out infinite;
+}
+@keyframes wave {
+  0%, 100% { height: 6px; }
+  50%      { height: 22px; }
+}
+
+/* hide scrollbars but keep scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

@@ -1,377 +1,428 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useMemo } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import confetti from 'canvas-confetti';
 import { missions, getRandomMission } from './data/missions';
 import { useLocalStorage } from './hooks/useLocalStorage';
-import type { Mission, MoodLevel, LogEntry, Screen } from './types';
+import { useSettings } from './hooks/useSettings';
+import { generateMission, speak, stopSpeaking } from './lib/ai';
+import type { Mission, MoodLevel, LogEntry, Screen, Settings } from './types';
+import { VOICE_PRESETS } from './types';
+import {
+  Background, MoodPicker, MissionCard, Timer, MOOD_OPTIONS, moodDelta,
+  PrimaryButton, GhostButton,
+} from './components/ui';
+import { AffirmationPanel } from './components/AffirmationPanel';
+import { CameraVerify } from './components/CameraVerify';
 
-const MOOD_OPTIONS: { level: MoodLevel; emoji: string; label: string }[] = [
-  { level: 1, emoji: '😞', label: 'Rough' },
-  { level: 2, emoji: '😕', label: 'Low' },
-  { level: 3, emoji: '😐', label: 'Okay' },
-  { level: 4, emoji: '🙂', label: 'Good' },
-  { level: 5, emoji: '😄', label: 'Great' },
-];
+// ── streak helper ─────────────────────────────────────────────
+function computeStreak(entries: LogEntry[]): number {
+  if (!entries.length) return 0;
+  const days = new Set(entries.map(e => new Date(e.completedAt).toDateString()));
+  let streak = 0;
+  const cursor = new Date();
+  // allow today OR yesterday to start the streak
+  if (!days.has(cursor.toDateString())) cursor.setDate(cursor.getDate() - 1);
+  while (days.has(cursor.toDateString())) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
 
-const CATEGORY_BG: Record<Mission['category'], string> = {
-  water:    'from-sky-100 to-blue-50',
-  earth:    'from-amber-100 to-stone-50',
-  sky:      'from-indigo-100 to-sky-50',
-  sound:    'from-violet-100 to-purple-50',
-  touch:    'from-green-100 to-emerald-50',
-  movement: 'from-teal-100 to-green-50',
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+const pageVariants = {
+  initial: { opacity: 0, x: 24 },
+  animate: { opacity: 1, x: 0 },
+  exit: { opacity: 0, x: -24 },
 };
 
-function moodDelta(before: MoodLevel, after: MoodLevel) {
-  const d = after - before;
-  if (d > 0) return { text: `+${d} mood boost`, color: 'text-green-700' };
-  if (d < 0) return { text: `${d} mood drop`, color: 'text-rose-600' };
-  return { text: 'No change', color: 'text-stone-400' };
-}
+export default function App() {
+  const [screen, setScreen] = useState<Screen>('home');
+  const [mission, setMission] = useState<Mission>(() => getRandomMission());
+  const [moodBefore, setMoodBefore] = useState<MoodLevel | null>(null);
+  const [pendingAffirmation, setPendingAffirmation] = useState<string | undefined>();
+  const [pendingVision, setPendingVision] = useState<{ note: string; verified: boolean } | undefined>();
+  const [log, setLog] = useLocalStorage<LogEntry[]>('oq-log', []);
+  const [generating, setGenerating] = useState(false);
+  const { settings, update, hasOpenAi, hasElevenLabs } = useSettings();
 
-// ─── Mood Picker ─────────────────────────────────────────────────────────────
-function MoodPicker({ value, onChange }: { value: MoodLevel | null; onChange: (v: MoodLevel) => void }) {
-  return (
-    <div className="flex justify-center gap-3 my-6">
-      {MOOD_OPTIONS.map(({ level, emoji, label }) => (
-        <button
-          key={level}
-          onClick={() => onChange(level)}
-          className={`flex flex-col items-center gap-1 px-3 py-3 rounded-2xl border-2 transition-all duration-150
-            ${value === level
-              ? 'border-green-600 bg-green-50 scale-110 shadow-md'
-              : 'border-stone-200 bg-white hover:border-green-300 hover:scale-105'}`}
-        >
-          <span className="text-3xl">{emoji}</span>
-          <span className={`text-xs font-medium ${value === level ? 'text-green-700' : 'text-stone-400'}`}>{label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
+  const streak = useMemo(() => computeStreak(log), [log]);
 
-// ─── Mission Card ─────────────────────────────────────────────────────────────
-function MissionCard({ mission, compact }: { mission: Mission; compact?: boolean }) {
-  const bg = CATEGORY_BG[mission.category];
-  return (
-    <div className={`rounded-3xl bg-linear-to-br ${bg} p-6 text-left relative overflow-hidden`}>
-      <div className="absolute -right-4 -top-4 text-8xl opacity-10 select-none">{mission.emoji}</div>
-      <span className="text-4xl mb-3 block">{mission.emoji}</span>
-      <h2 className="text-xl font-bold text-stone-800 mb-2">{mission.title}</h2>
-      {!compact && (
-        <p className="text-stone-600 text-sm leading-relaxed mb-4">{mission.description}</p>
-      )}
-      <span className="inline-flex items-center gap-1 text-xs font-semibold bg-white/60 text-stone-600 px-3 py-1 rounded-full">
-        ⏱ {mission.durationMin} min
-      </span>
-    </div>
-  );
-}
+  const go = (s: Screen) => { stopSpeaking(); setScreen(s); };
 
-// ─── Timer ───────────────────────────────────────────────────────────────────
-function Timer({ durationMin, onDone }: { durationMin: number; onDone: () => void }) {
-  const total = durationMin * 60;
-  const [left, setLeft] = useState(total);
-  const done = useRef(false);
+  const handleNewMission = () => setMission(getRandomMission(mission.id));
 
-  useEffect(() => {
-    if (left <= 0) {
-      if (!done.current) { done.current = true; onDone(); }
-      return;
+  const handleAiGenerate = async () => {
+    if (!hasOpenAi) { go('settings'); return; }
+    setGenerating(true);
+    try {
+      const m = await generateMission(settings);
+      if (m) setMission(m);
+    } finally {
+      setGenerating(false);
     }
-    const id = setTimeout(() => setLeft(l => l - 1), 1000);
-    return () => clearTimeout(id);
-  }, [left, onDone]);
+  };
 
-  const pct = ((total - left) / total) * 100;
-  const mm = String(Math.floor(left / 60)).padStart(2, '0');
-  const ss = String(left % 60).padStart(2, '0');
+  const handleMoodBefore = (m: MoodLevel) => { setMoodBefore(m); go('active'); };
+
+  const handleSave = (moodAfter: MoodLevel) => {
+    const entry: LogEntry = {
+      id: crypto.randomUUID(),
+      missionId: mission.id,
+      missionTitle: mission.title,
+      missionEmoji: mission.emoji,
+      moodBefore: moodBefore!,
+      moodAfter,
+      completedAt: new Date().toISOString(),
+      affirmation: pendingAffirmation,
+      visionNote: pendingVision?.note,
+      verified: pendingVision?.verified,
+    };
+    setLog(prev => [...prev, entry]);
+    confetti({
+      particleCount: 90,
+      spread: 75,
+      origin: { y: 0.6 },
+      colors: ['#34d399', '#22d3ee', '#a7f3d0', '#fde68a'],
+    });
+    setMission(getRandomMission(mission.id));
+    setMoodBefore(null);
+    setPendingAffirmation(undefined);
+    setPendingVision(undefined);
+    go('home');
+  };
 
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="relative w-36 h-36">
-        <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
-          <circle cx="60" cy="60" r="52" fill="none" stroke="#e5e7eb" strokeWidth="8" />
-          <circle
-            cx="60" cy="60" r="52" fill="none"
-            stroke="#16a34a" strokeWidth="8"
-            strokeLinecap="round"
-            strokeDasharray={`${2 * Math.PI * 52}`}
-            strokeDashoffset={`${2 * Math.PI * 52 * (1 - pct / 100)}`}
-            className="transition-all duration-1000"
-          />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-3xl font-mono font-bold text-stone-800">{mm}:{ss}</span>
-        </div>
+    <div className="relative min-h-dvh w-full flex justify-center overflow-hidden">
+      <Background />
+      <div
+        className="relative z-10 w-full max-w-sm min-h-dvh flex flex-col"
+        style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={screen}
+            variants={pageVariants}
+            initial="initial" animate="animate" exit="exit"
+            transition={{ duration: 0.28, ease: 'easeOut' }}
+            className="flex-1 flex flex-col"
+          >
+            {screen === 'home' && (
+              <HomeScreen
+                mission={mission} streak={streak} logCount={log.length}
+                generating={generating}
+                onStart={() => go('mood-before')}
+                onShuffle={handleNewMission}
+                onAiGenerate={handleAiGenerate}
+                onLog={() => go('log')}
+                onSettings={() => go('settings')}
+              />
+            )}
+            {screen === 'mood-before' && (
+              <MoodBeforeScreen
+                mission={mission}
+                onNext={handleMoodBefore}
+                onBack={() => go('home')}
+              />
+            )}
+            {screen === 'active' && moodBefore && (
+              <ActiveScreen
+                mission={mission} moodBefore={moodBefore} settings={settings}
+                onAffirmation={setPendingAffirmation}
+                onVision={setPendingVision}
+                onDone={() => go('mood-after')}
+              />
+            )}
+            {screen === 'mood-after' && moodBefore && (
+              <MoodAfterScreen
+                mission={mission} moodBefore={moodBefore} settings={settings}
+                onAffirmation={setPendingAffirmation}
+                onSave={handleSave}
+                onBack={() => go('active')}
+              />
+            )}
+            {screen === 'log' && (
+              <LogScreen entries={log} streak={streak}
+                onBack={() => go('home')} onClear={() => setLog([])} />
+            )}
+            {screen === 'settings' && (
+              <SettingsScreen
+                settings={settings} update={update}
+                hasOpenAi={hasOpenAi} hasElevenLabs={hasElevenLabs}
+                onBack={() => go('home')}
+              />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
-      <p className="text-stone-400 text-sm">Stay present · no peeking</p>
     </div>
   );
 }
 
-// ─── Home Screen ─────────────────────────────────────────────────────────────
+// ── HOME ──────────────────────────────────────────────────────
 function HomeScreen({
-  mission, onStart, onNewMission, onLog, logCount,
+  mission, streak, logCount, generating,
+  onStart, onShuffle, onAiGenerate, onLog, onSettings,
 }: {
-  mission: Mission;
-  onStart: () => void;
-  onNewMission: () => void;
-  onLog: () => void;
-  logCount: number;
+  mission: Mission; streak: number; logCount: number; generating: boolean;
+  onStart: () => void; onShuffle: () => void; onAiGenerate: () => void;
+  onLog: () => void; onSettings: () => void;
 }) {
   return (
-    <div className="animate-fade-in flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 pt-8 pb-4">
+    <div className="flex flex-col h-full px-5 pt-6">
+      <header className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-stone-800 tracking-tight">OfflineQuest 🌿</h1>
-          <p className="text-stone-400 text-sm">Step outside. Feel something real.</p>
+          <p className="text-emerald-300/80 text-sm">{greeting()}</p>
+          <h1 className="font-display text-3xl font-semibold text-white tracking-tight">OfflineQuest</h1>
         </div>
-        <button
-          onClick={onLog}
-          className="relative flex items-center gap-1.5 text-sm font-medium text-stone-500 hover:text-green-700 transition-colors px-3 py-2 rounded-xl hover:bg-green-50"
-        >
-          📋 Log
-          {logCount > 0 && (
-            <span className="absolute -top-1 -right-1 bg-green-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
-              {logCount > 9 ? '9+' : logCount}
-            </span>
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={onLog}
+            className="relative w-10 h-10 rounded-full glass flex items-center justify-center text-white/80 hover:text-white">
+            📋
+            {logCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-emerald-500 text-white text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                {logCount > 9 ? '9+' : logCount}
+              </span>
+            )}
+          </button>
+          <button onClick={onSettings}
+            className="w-10 h-10 rounded-full glass flex items-center justify-center text-white/80 hover:text-white">
+            ⚙️
+          </button>
+        </div>
+      </header>
+
+      {streak > 0 && (
+        <div className="mb-5 flex items-center gap-2 self-start glass rounded-full pl-2 pr-4 py-1.5">
+          <span className="text-lg">🔥</span>
+          <span className="text-sm text-white/90 font-semibold">{streak}-day streak</span>
+        </div>
+      )}
+
+      <div className="text-[11px] font-semibold text-emerald-300/70 uppercase tracking-widest mb-3">
+        Today's Quest
+      </div>
+      <MissionCard mission={mission} />
+
+      <div className="grid grid-cols-2 gap-2 mt-3">
+        <GhostButton onClick={onShuffle}>🎲 Shuffle</GhostButton>
+        <GhostButton onClick={onAiGenerate}>
+          {generating ? <span className="inline-flex items-center gap-2"><Spinner />Conjuring…</span> : '✦ AI Quest'}
+        </GhostButton>
       </div>
 
-      {/* Today's mission */}
-      <div className="px-6 flex-1 flex flex-col gap-4">
-        <div className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-1">Today's Quest</div>
-        <MissionCard mission={mission} />
+      <div className="mt-3">
+        <PrimaryButton onClick={onStart}>Begin Quest →</PrimaryButton>
+      </div>
 
-        <div className="flex gap-3 mt-2">
-          <button
-            onClick={onNewMission}
-            className="flex-1 py-3.5 rounded-2xl border-2 border-stone-200 text-stone-600 font-semibold text-sm hover:border-green-300 hover:text-green-700 transition-all"
-          >
-            🎲 New Quest
-          </button>
-          <button
-            onClick={onStart}
-            className="flex-2 py-3.5 rounded-2xl bg-green-600 text-white font-bold text-sm hover:bg-green-700 active:scale-[0.98] transition-all shadow-lg shadow-green-200"
-          >
-            Begin Quest →
-          </button>
-        </div>
-
-        {/* All missions preview */}
-        <div className="mt-4">
-          <div className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-3">All Quests</div>
-          <div className="grid grid-cols-2 gap-2">
-            {missions.slice(0, 6).map(m => (
-              <div key={m.id} className="bg-stone-50 rounded-2xl p-3 flex items-center gap-2">
-                <span className="text-xl">{m.emoji}</span>
-                <div>
-                  <p className="text-xs font-semibold text-stone-700 leading-tight">{m.title}</p>
-                  <p className="text-xs text-stone-400">{m.durationMin} min</p>
-                </div>
+      <div className="mt-6 flex-1 overflow-y-auto no-scrollbar">
+        <div className="text-[11px] font-semibold text-white/40 uppercase tracking-widest mb-2">Explore</div>
+        <div className="grid grid-cols-2 gap-2 pb-6">
+          {missions.slice(0, 8).map(m => (
+            <div key={m.id} className="glass rounded-2xl p-3 flex items-center gap-2">
+              <span className="text-xl">{m.emoji}</span>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white/90 truncate">{m.title}</p>
+                <p className="text-[10px] text-white/40">{m.durationMin} min</p>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
-      <div className="h-8" />
     </div>
   );
 }
 
-// ─── Mood Before Screen ───────────────────────────────────────────────────────
+// ── MOOD BEFORE ───────────────────────────────────────────────
 function MoodBeforeScreen({
   mission, onNext, onBack,
-}: {
-  mission: Mission;
-  onNext: (mood: MoodLevel) => void;
-  onBack: () => void;
-}) {
+}: { mission: Mission; onNext: (m: MoodLevel) => void; onBack: () => void }) {
   const [mood, setMood] = useState<MoodLevel | null>(null);
-
   return (
-    <div className="animate-fade-in flex flex-col h-full px-6 pt-8">
-      <button onClick={onBack} className="text-stone-400 hover:text-stone-600 text-sm mb-6 self-start flex items-center gap-1">
-        ← Back
-      </button>
-      <div className="text-4xl mb-2 text-center">🌿</div>
-      <h2 className="text-2xl font-bold text-stone-800 text-center mb-1">Before you go…</h2>
-      <p className="text-stone-400 text-center text-sm mb-6">How are you feeling right now?</p>
-
-      <MissionCard mission={mission} compact />
-
+    <div className="flex flex-col h-full px-5 pt-6">
+      <BackBtn onClick={onBack} />
+      <div className="text-center mt-4 mb-2">
+        <div className="text-4xl mb-2 animate-float">🌿</div>
+        <h2 className="font-display text-2xl font-semibold text-white">Before you go…</h2>
+        <p className="text-white/50 text-sm mt-1">How are you feeling right now?</p>
+      </div>
+      <div className="my-4"><MissionCard mission={mission} compact /></div>
       <MoodPicker value={mood} onChange={setMood} />
-
-      <button
-        onClick={() => mood && onNext(mood)}
-        disabled={!mood}
-        className="mt-auto mb-8 w-full py-4 rounded-2xl bg-green-600 text-white font-bold text-base
-          disabled:bg-stone-200 disabled:text-stone-400 hover:bg-green-700 active:scale-[0.98] transition-all shadow-lg shadow-green-100"
-      >
-        Start Quest →
-      </button>
+      <div className="mt-auto pb-6">
+        <PrimaryButton disabled={!mood} onClick={() => mood && onNext(mood)}>
+          Start Quest →
+        </PrimaryButton>
+      </div>
     </div>
   );
 }
 
-// ─── Active Mission Screen ────────────────────────────────────────────────────
-function ActiveMissionScreen({
-  mission, onDone,
+// ── ACTIVE ────────────────────────────────────────────────────
+function ActiveScreen({
+  mission, moodBefore, settings, onAffirmation, onVision, onDone,
 }: {
-  mission: Mission;
+  mission: Mission; moodBefore: MoodLevel; settings: Settings;
+  onAffirmation: (t: string) => void;
+  onVision: (v: { note: string; verified: boolean }) => void;
   onDone: () => void;
 }) {
   const [timerDone, setTimerDone] = useState(false);
-
   return (
-    <div className="animate-fade-in flex flex-col h-full px-6 pt-8 text-center">
-      <div className={`flex-1 flex flex-col items-center justify-center bg-linear-to-br ${CATEGORY_BG[mission.category]} rounded-3xl p-8 mb-6`}>
-        <div className="text-6xl mb-4 animate-pulse-ring">{mission.emoji}</div>
-        <h2 className="text-xl font-bold text-stone-800 mb-3">{mission.title}</h2>
-        <p className="text-stone-600 text-sm leading-relaxed mb-8 max-w-xs">{mission.description}</p>
-        <Timer durationMin={mission.durationMin} onDone={() => setTimerDone(true)} />
+    <div className="flex flex-col h-full px-5 pt-6">
+      <div className="text-center mb-4">
+        <span className="text-[11px] font-semibold uppercase tracking-widest text-emerald-300/70">In progress</span>
+        <h2 className="font-display text-2xl font-semibold text-white mt-1">{mission.emoji} {mission.title}</h2>
       </div>
 
-      {timerDone && (
-        <div className="animate-fade-in text-center mb-2">
-          <p className="text-green-700 font-semibold text-sm mb-3">✨ Time's up! How do you feel?</p>
-        </div>
-      )}
+      <div className="rounded-3xl glass p-6 flex flex-col items-center gap-4">
+        <Timer durationMin={mission.durationMin} onDone={() => setTimerDone(true)} />
+        <p className="text-white/70 text-sm text-center leading-relaxed max-w-xs">{mission.description}</p>
+      </div>
 
-      <button
-        onClick={onDone}
-        className={`w-full py-4 rounded-2xl font-bold text-base mb-8 transition-all
-          ${timerDone
-            ? 'bg-green-600 text-white hover:bg-green-700 shadow-lg shadow-green-200 active:scale-[0.98]'
-            : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`}
-      >
-        {timerDone ? "I'm Done! →" : "Skip Timer →"}
-      </button>
+      <div className="mt-4 space-y-2 flex-1 overflow-y-auto no-scrollbar pb-2">
+        <AffirmationPanel settings={settings} mission={mission} moodBefore={moodBefore}
+          onAffirmation={onAffirmation} />
+        <CameraVerify settings={settings} mission={mission} onResult={onVision} />
+      </div>
+
+      <div className="pb-6">
+        {timerDone && (
+          <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="text-center text-emerald-300 text-sm font-medium mb-2">
+            ✨ Time's up — how do you feel?
+          </motion.p>
+        )}
+        <PrimaryButton onClick={onDone}>
+          {timerDone ? "I'm done →" : 'Finish early →'}
+        </PrimaryButton>
+      </div>
     </div>
   );
 }
 
-// ─── Mood After Screen ────────────────────────────────────────────────────────
+// ── MOOD AFTER ────────────────────────────────────────────────
 function MoodAfterScreen({
-  moodBefore, onSave, onBack,
+  mission, moodBefore, settings, onAffirmation, onSave, onBack,
 }: {
-  moodBefore: MoodLevel;
-  onSave: (moodAfter: MoodLevel) => void;
-  onBack: () => void;
+  mission: Mission; moodBefore: MoodLevel;
+  settings: Settings;
+  onAffirmation: (t: string) => void;
+  onSave: (m: MoodLevel) => void; onBack: () => void;
 }) {
   const [mood, setMood] = useState<MoodLevel | null>(null);
   const before = MOOD_OPTIONS.find(o => o.level === moodBefore)!;
-
   return (
-    <div className="animate-fade-in flex flex-col h-full px-6 pt-8">
-      <button onClick={onBack} className="text-stone-400 hover:text-stone-600 text-sm mb-6 self-start flex items-center gap-1">
-        ← Back
-      </button>
-      <div className="text-4xl mb-2 text-center">✨</div>
-      <h2 className="text-2xl font-bold text-stone-800 text-center mb-1">Quest Complete!</h2>
-      <p className="text-stone-400 text-center text-sm mb-6">How do you feel now?</p>
+    <div className="flex flex-col h-full px-5 pt-6">
+      <BackBtn onClick={onBack} />
+      <div className="text-center mt-4 mb-2">
+        <div className="text-4xl mb-2 animate-float">✨</div>
+        <h2 className="font-display text-2xl font-semibold text-white">Quest complete!</h2>
+        <p className="text-white/50 text-sm mt-1">How do you feel now?</p>
+      </div>
 
-      {/* Before mood */}
-      <div className="bg-stone-50 rounded-2xl px-5 py-4 flex items-center justify-between mb-4">
-        <span className="text-sm text-stone-500">Before</span>
-        <span className="flex items-center gap-2 font-semibold text-stone-700">
+      <div className="glass rounded-2xl px-5 py-3 flex items-center justify-between my-3">
+        <span className="text-sm text-white/50">Before</span>
+        <span className="flex items-center gap-2 font-semibold text-white/90">
           <span className="text-xl">{before.emoji}</span> {before.label}
         </span>
       </div>
 
-      <p className="text-sm font-semibold text-stone-500 mb-1 text-center">After:</p>
       <MoodPicker value={mood} onChange={setMood} />
-
-      {mood && moodBefore && (
-        <div className="animate-fade-in text-center -mt-2 mb-4">
+      {mood && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center -mt-1 mb-2">
           <span className={`text-sm font-bold ${moodDelta(moodBefore, mood).color}`}>
             {moodDelta(moodBefore, mood).text}
           </span>
-        </div>
+        </motion.div>
       )}
 
-      <button
-        onClick={() => mood && onSave(mood)}
-        disabled={!mood}
-        className="mt-auto mb-8 w-full py-4 rounded-2xl bg-green-600 text-white font-bold text-base
-          disabled:bg-stone-200 disabled:text-stone-400 hover:bg-green-700 active:scale-[0.98] transition-all shadow-lg shadow-green-100"
-      >
-        Save to Log →
-      </button>
+      <div className="my-2">
+        <AffirmationPanel settings={settings} mission={mission}
+          moodBefore={moodBefore} moodAfter={mood ?? undefined}
+          onAffirmation={onAffirmation} />
+      </div>
+
+      <div className="mt-auto pb-6">
+        <PrimaryButton disabled={!mood} onClick={() => mood && onSave(mood)}>
+          Save to journal →
+        </PrimaryButton>
+      </div>
     </div>
   );
 }
 
-// ─── Log Screen ───────────────────────────────────────────────────────────────
-function LogScreen({ entries, onBack, onClear }: { entries: LogEntry[]; onBack: () => void; onClear: () => void }) {
+// ── LOG ───────────────────────────────────────────────────────
+function LogScreen({
+  entries, streak, onBack, onClear,
+}: { entries: LogEntry[]; streak: number; onBack: () => void; onClear: () => void }) {
   const avg = (arr: number[]) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : '—';
-  const avgBefore = avg(entries.map(e => e.moodBefore));
-  const avgAfter  = avg(entries.map(e => e.moodAfter));
+  const lift = entries.length
+    ? (entries.reduce((s, e) => s + (e.moodAfter - e.moodBefore), 0) / entries.length).toFixed(1)
+    : '—';
 
   return (
-    <div className="animate-fade-in flex flex-col h-full px-6 pt-8">
-      <div className="flex items-center justify-between mb-6">
-        <button onClick={onBack} className="text-stone-400 hover:text-stone-600 text-sm flex items-center gap-1">
-          ← Back
-        </button>
+    <div className="flex flex-col h-full px-5 pt-6">
+      <div className="flex items-center justify-between mb-4">
+        <BackBtn onClick={onBack} inline />
         {entries.length > 0 && (
-          <button onClick={onClear} className="text-xs text-rose-400 hover:text-rose-600 transition-colors">
-            Clear all
-          </button>
+          <button onClick={onClear} className="text-xs text-rose-300/70 hover:text-rose-300">Clear all</button>
         )}
       </div>
-
-      <h2 className="text-2xl font-bold text-stone-800 mb-1">Quest Log 📋</h2>
-      <p className="text-stone-400 text-sm mb-6">{entries.length} quest{entries.length !== 1 ? 's' : ''} completed</p>
+      <h2 className="font-display text-3xl font-semibold text-white mb-1">Journal</h2>
+      <p className="text-white/50 text-sm mb-4">{entries.length} quest{entries.length !== 1 ? 's' : ''} · {streak}-day streak 🔥</p>
 
       {entries.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 mb-6">
-          <div className="bg-stone-50 rounded-2xl p-4 text-center">
-            <p className="text-2xl font-bold text-stone-800">{avgBefore}</p>
-            <p className="text-xs text-stone-400 mt-1">Avg mood before</p>
-          </div>
-          <div className="bg-green-50 rounded-2xl p-4 text-center">
-            <p className="text-2xl font-bold text-green-700">{avgAfter}</p>
-            <p className="text-xs text-stone-400 mt-1">Avg mood after</p>
-          </div>
+        <div className="grid grid-cols-3 gap-2 mb-5">
+          <Stat label="Avg before" value={avg(entries.map(e => e.moodBefore))} />
+          <Stat label="Avg after" value={avg(entries.map(e => e.moodAfter))} highlight />
+          <Stat label="Avg lift" value={`+${lift}`} highlight />
         </div>
       )}
 
       {entries.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center">
-          <div className="text-5xl mb-4">🌱</div>
-          <p className="text-stone-500 font-medium">No quests yet.</p>
-          <p className="text-stone-400 text-sm mt-1">Complete your first mission to start tracking.</p>
+          <div className="text-5xl mb-4 animate-float">🌱</div>
+          <p className="text-white/70 font-medium">No quests yet.</p>
+          <p className="text-white/40 text-sm mt-1">Complete your first to start tracking.</p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto space-y-3 pb-8">
-          {[...entries].reverse().map(entry => {
-            const before = MOOD_OPTIONS.find(o => o.level === entry.moodBefore)!;
-            const after  = MOOD_OPTIONS.find(o => o.level === entry.moodAfter)!;
-            const delta  = moodDelta(entry.moodBefore, entry.moodAfter);
-            const date   = new Date(entry.completedAt);
+        <div className="flex-1 overflow-y-auto no-scrollbar space-y-2.5 pb-6">
+          {[...entries].reverse().map(e => {
+            const before = MOOD_OPTIONS.find(o => o.level === e.moodBefore)!;
+            const after = MOOD_OPTIONS.find(o => o.level === e.moodAfter)!;
+            const d = moodDelta(e.moodBefore, e.moodAfter);
+            const date = new Date(e.completedAt);
             return (
-              <div key={entry.id} className="bg-white border border-stone-100 rounded-2xl p-4 shadow-sm">
-                <div className="flex items-start justify-between mb-3">
+              <div key={e.id} className="glass rounded-2xl p-4">
+                <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-xl">{entry.missionEmoji}</span>
+                    <span className="text-xl">{e.missionEmoji}</span>
                     <div>
-                      <p className="text-sm font-semibold text-stone-800">{entry.missionTitle}</p>
-                      <p className="text-xs text-stone-400">
+                      <p className="text-sm font-semibold text-white/90 flex items-center gap-1.5">
+                        {e.missionTitle}
+                        {e.verified && <span className="text-emerald-300 text-xs">✓</span>}
+                      </p>
+                      <p className="text-[10px] text-white/40">
                         {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · {date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
                   </div>
-                  <span className={`text-xs font-bold ${delta.color}`}>{delta.text}</span>
+                  <span className={`text-xs font-bold ${d.color}`}>{d.text}</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-stone-400 text-xs">Before</span>
+                <div className="flex items-center gap-2 text-sm mb-1">
                   <span className="text-xl">{before.emoji}</span>
-                  <span className="text-stone-300">→</span>
+                  <span className="text-white/30">→</span>
                   <span className="text-xl">{after.emoji}</span>
-                  <span className="text-stone-400 text-xs">After</span>
                 </div>
+                {e.affirmation && (
+                  <p className="font-display text-xs italic text-white/60 mt-2 leading-relaxed">"{e.affirmation}"</p>
+                )}
               </div>
             );
           })}
@@ -381,84 +432,165 @@ function LogScreen({ entries, onBack, onClear }: { entries: LogEntry[]; onBack: 
   );
 }
 
-// ─── App ─────────────────────────────────────────────────────────────────────
-export default function App() {
-  const [screen, setScreen] = useState<Screen>('home');
-  const [mission, setMission] = useState<Mission>(() => getRandomMission());
-  const [moodBefore, setMoodBefore] = useState<MoodLevel | null>(null);
-  const [log, setLog] = useLocalStorage<LogEntry[]>('oq-log', []);
-
-  const handleStart = () => setScreen('mood-before');
-  const handleNewMission = () => setMission(getRandomMission(mission.id));
-
-  const handleMoodBefore = (mood: MoodLevel) => {
-    setMoodBefore(mood);
-    setScreen('active');
-  };
-
-  const handleMissionDone = () => setScreen('mood-after');
-
-  const handleMoodAfter = (moodAfter: MoodLevel) => {
-    const entry: LogEntry = {
-      id: crypto.randomUUID(),
-      missionId: mission.id,
-      missionTitle: mission.title,
-      missionEmoji: mission.emoji,
-      moodBefore: moodBefore!,
-      moodAfter,
-      completedAt: new Date().toISOString(),
-    };
-    setLog(prev => [...prev, entry]);
-    setMission(getRandomMission(mission.id));
-    setMoodBefore(null);
-    setScreen('home');
+// ── SETTINGS ──────────────────────────────────────────────────
+function SettingsScreen({
+  settings, update, hasOpenAi, hasElevenLabs, onBack,
+}: {
+  settings: Settings;
+  update: (p: Partial<Settings>) => void;
+  hasOpenAi: boolean; hasElevenLabs: boolean; onBack: () => void;
+}) {
+  const [testing, setTesting] = useState(false);
+  const testVoice = async () => {
+    setTesting(true);
+    await speak(settings, 'Take a slow breath. The earth is steady beneath you, and so are you.', () => {});
+    setTimeout(() => setTesting(false), 1200);
   };
 
   return (
-    <div className="min-h-dvh bg-stone-50 flex justify-center">
-      <div className="w-full max-w-sm bg-white min-h-dvh flex flex-col shadow-xl relative overflow-hidden"
-        style={{
-          paddingTop: 'env(safe-area-inset-top)',
-          paddingBottom: 'env(safe-area-inset-bottom)',
-        }}
-      >
-        {screen === 'home' && (
-          <HomeScreen
-            mission={mission}
-            onStart={handleStart}
-            onNewMission={handleNewMission}
-            onLog={() => setScreen('log')}
-            logCount={log.length}
+    <div className="flex flex-col h-full px-5 pt-6">
+      <BackBtn onClick={onBack} />
+      <h2 className="font-display text-3xl font-semibold text-white mt-4 mb-1">Settings</h2>
+      <p className="text-white/50 text-sm mb-5">Keys are stored only on this device, never uploaded.</p>
+
+      <div className="flex-1 overflow-y-auto no-scrollbar space-y-5 pb-6">
+        <Field label="Your name (optional)" hint="Personalizes your affirmations">
+          <input
+            value={settings.affirmationName}
+            onChange={e => update({ affirmationName: e.target.value })}
+            placeholder="e.g. Aaron"
+            className="oq-input"
           />
-        )}
-        {screen === 'mood-before' && (
-          <MoodBeforeScreen
-            mission={mission}
-            onNext={handleMoodBefore}
-            onBack={() => setScreen('home')}
-          />
-        )}
-        {screen === 'active' && (
-          <ActiveMissionScreen
-            mission={mission}
-            onDone={handleMissionDone}
-          />
-        )}
-        {screen === 'mood-after' && moodBefore && (
-          <MoodAfterScreen
-            moodBefore={moodBefore}
-            onSave={handleMoodAfter}
-            onBack={() => setScreen('active')}
-          />
-        )}
-        {screen === 'log' && (
-          <LogScreen
-            entries={log}
-            onBack={() => setScreen('home')}
-            onClear={() => setLog([])}
-          />
-        )}
+        </Field>
+
+        <div className="glass rounded-2xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold text-white">🧠 OpenAI</span>
+            <Badge ok={hasOpenAi} />
+          </div>
+          <Field label="API key" hint="Powers affirmations, AI quests & vision">
+            <input
+              type="password" value={settings.openAiKey}
+              onChange={e => update({ openAiKey: e.target.value })}
+              placeholder="sk-..." className="oq-input" autoComplete="off"
+            />
+          </Field>
+          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
+            className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
+            Get an OpenAI key ↗
+          </a>
+        </div>
+
+        <div className="glass rounded-2xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold text-white">🎙️ ElevenLabs voice</span>
+            <Badge ok={hasElevenLabs} />
+          </div>
+          <Field label="API key" hint="Ultra-realistic voice. Without it, your device's voice is used.">
+            <input
+              type="password" value={settings.elevenLabsKey}
+              onChange={e => update({ elevenLabsKey: e.target.value })}
+              placeholder="..." className="oq-input" autoComplete="off"
+            />
+          </Field>
+          <Field label="Voice">
+            <select
+              value={settings.elevenLabsVoiceId}
+              onChange={e => update({ elevenLabsVoiceId: e.target.value })}
+              className="oq-input"
+            >
+              {VOICE_PRESETS.map(v => (
+                <option key={v.id} value={v.id} className="bg-stone-900">
+                  {v.name} — {v.vibe}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer"
+            className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
+            Get an ElevenLabs key ↗
+          </a>
+        </div>
+
+        <div className="glass rounded-2xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-white">Spoken affirmations</p>
+            <p className="text-xs text-white/40">Read affirmations aloud</p>
+          </div>
+          <Toggle on={settings.voiceEnabled} onClick={() => update({ voiceEnabled: !settings.voiceEnabled })} />
+        </div>
+
+        <button onClick={testVoice} disabled={testing}
+          className="w-full py-3 rounded-2xl glass text-white/80 text-sm font-medium hover:text-white disabled:opacity-50">
+          {testing ? '🔊 Speaking…' : '▶ Test voice'}
+        </button>
       </div>
+
+      <style>{`
+        .oq-input {
+          width: 100%;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.12);
+          border-radius: 0.85rem;
+          padding: 0.7rem 0.9rem;
+          color: white;
+          font-size: 0.9rem;
+          outline: none;
+        }
+        .oq-input::placeholder { color: rgba(255,255,255,0.3); }
+        .oq-input:focus { border-color: rgba(52,211,153,0.6); }
+      `}</style>
     </div>
   );
+}
+
+// ── small bits ────────────────────────────────────────────────
+function BackBtn({ onClick, inline }: { onClick: () => void; inline?: boolean }) {
+  return (
+    <button onClick={onClick}
+      className={`text-white/50 hover:text-white text-sm flex items-center gap-1 ${inline ? '' : 'self-start'}`}>
+      ← Back
+    </button>
+  );
+}
+
+function Stat({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div className={`rounded-2xl p-3 text-center ${highlight ? 'bg-emerald-400/15 border border-emerald-300/20' : 'glass'}`}>
+      <p className={`text-xl font-bold ${highlight ? 'text-emerald-200' : 'text-white'}`}>{value}</p>
+      <p className="text-[10px] text-white/40 mt-0.5">{label}</p>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-white/70 block mb-1.5">{label}</span>
+      {children}
+      {hint && <span className="text-[11px] text-white/35 block mt-1">{hint}</span>}
+    </label>
+  );
+}
+
+function Badge({ ok }: { ok: boolean }) {
+  return (
+    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${ok ? 'bg-emerald-400/20 text-emerald-300' : 'bg-white/10 text-white/40'}`}>
+      {ok ? 'Connected' : 'Not set'}
+    </span>
+  );
+}
+
+function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick}
+      className={`w-12 h-7 rounded-full p-1 transition-colors ${on ? 'bg-emerald-500' : 'bg-white/15'}`}>
+      <motion.span layout className="block w-5 h-5 rounded-full bg-white"
+        style={{ marginLeft: on ? 'auto' : 0 }} />
+    </button>
+  );
+}
+
+function Spinner() {
+  return <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />;
 }
