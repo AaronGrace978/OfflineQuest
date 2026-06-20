@@ -63,11 +63,14 @@ export const DEFAULT_SETTINGS: Settings = {
   openAiVisionModel: 'gpt-4o',
   ollamaApiKey: '',
   ollamaProxyUrl: '',
-  ollamaTextModel: 'gemma4:12b',
-  ollamaVisionModel: 'gemma4:12b',
+  ollamaTextModel: 'glm-4.7',
+  ollamaVisionModel: 'kimi-k2.5',
   elevenLabsKey: '',
   elevenLabsVoiceId: 'EXAVITQu4vr4xnSDxMaL',
 };
+
+/** Pre-deployed Cloudflare proxy — Ollama key lives on the worker, not in the browser. */
+export const OLLAMA_PROXY_URL = 'https://offlinequest-ollama-proxy.aromatic-game.workers.dev';
 
 export const AI_PROVIDER_OPTIONS: { id: AiProvider; label: string; desc: string }[] = [
   { id: 'auto', label: 'Auto (best available)', desc: 'Picks the strongest configured provider per task' },

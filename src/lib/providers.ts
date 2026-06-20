@@ -1,4 +1,5 @@
 import type { Settings } from '../types';
+import { OLLAMA_PROXY_URL } from '../types';
 
 const OPENAI_CHAT = 'https://api.openai.com/v1/chat/completions';
 const OLLAMA_CLOUD = 'https://ollama.com/api';
@@ -6,6 +7,27 @@ const OLLAMA_LOCAL = 'http://localhost:11434/api';
 
 export type AiTask = 'text' | 'vision';
 type ResolvedProvider = 'openai' | 'ollama-cloud' | 'ollama-local';
+
+function isHostedApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  return h.includes('github.io') || h.includes('pages.dev');
+}
+
+/** Resolve proxy URL — auto-use built-in proxy on GitHub Pages. */
+export function effectiveProxyUrl(settings: Settings): string {
+  const custom = settings.ollamaProxyUrl.trim();
+  if (custom) return custom.replace(/\/$/, '');
+  if (isHostedApp()) return OLLAMA_PROXY_URL;
+  return '';
+}
+
+export function withEffectiveProxy(settings: Settings): Settings {
+  const proxy = effectiveProxyUrl(settings);
+  return proxy && !settings.ollamaProxyUrl.trim()
+    ? { ...settings, ollamaProxyUrl: proxy }
+    : settings;
+}
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -30,7 +52,7 @@ function hasOpenAi(s: Settings) {
 }
 
 function hasOllamaCloud(s: Settings) {
-  return s.ollamaApiKey.trim().length > 0;
+  return s.ollamaApiKey.trim().length > 0 || effectiveProxyUrl(s).length > 0;
 }
 
 /** Local Ollama needs no key — we probe at call time. */
@@ -39,30 +61,32 @@ function wantsOllamaLocal(s: Settings) {
 }
 
 export function resolveProvider(settings: Settings, task: AiTask): ResolvedProvider | null {
-  const pref = settings.aiProvider;
+  const s = withEffectiveProxy(settings);
+  const pref = s.aiProvider;
 
-  if (pref === 'openai') return hasOpenAi(settings) ? 'openai' : null;
-  if (pref === 'ollama-cloud') return hasOllamaCloud(settings) ? 'ollama-cloud' : null;
+  if (pref === 'openai') return hasOpenAi(s) ? 'openai' : null;
+  if (pref === 'ollama-cloud') return hasOllamaCloud(s) ? 'ollama-cloud' : null;
   if (pref === 'ollama-local') return 'ollama-local';
 
   // Auto: vision prefers OpenAI (reliable), then Ollama cloud vision, then local
   if (task === 'vision') {
-    if (hasOpenAi(settings)) return 'openai';
-    if (hasOllamaCloud(settings)) return 'ollama-cloud';
-    if (wantsOllamaLocal(settings)) return 'ollama-local';
+    if (hasOpenAi(s)) return 'openai';
+    if (hasOllamaCloud(s)) return 'ollama-cloud';
+    if (wantsOllamaLocal(s)) return 'ollama-local';
     return null;
   }
 
   // Auto text: Ollama cloud (big free-tier models) → OpenAI → local
-  if (hasOllamaCloud(settings)) return 'ollama-cloud';
-  if (hasOpenAi(settings)) return 'openai';
-  if (wantsOllamaLocal(settings)) return 'ollama-local';
+  if (hasOllamaCloud(s)) return 'ollama-cloud';
+  if (hasOpenAi(s)) return 'openai';
+  if (wantsOllamaLocal(s)) return 'ollama-local';
   return null;
 }
 
 export function activeProviderLabel(settings: Settings): string {
-  const text = resolveProvider(settings, 'text');
-  const vision = resolveProvider(settings, 'vision');
+  const s = withEffectiveProxy(settings);
+  const text = resolveProvider(s, 'text');
+  const vision = resolveProvider(s, 'vision');
   if (!text && !vision) return 'No AI configured';
   if (text === vision) return labelFor(text);
   return `${labelFor(text)} · vision: ${labelFor(vision)}`;
@@ -213,7 +237,7 @@ export async function testOllamaConnection(
   settings: Settings,
   host: 'cloud' | 'local',
 ): Promise<{ ok: boolean; message: string }> {
-  if (host === 'cloud' && isHostedApp() && !settings.ollamaProxyUrl.trim()) {
+  if (host === 'cloud' && isHostedApp() && !effectiveProxyUrl(settings)) {
     return {
       ok: false,
       message: 'Ollama Cloud is blocked by browser security on GitHub Pages. Add a proxy URL below, or use OpenAI instead.',
@@ -221,10 +245,9 @@ export async function testOllamaConnection(
   }
 
   const base = host === 'cloud'
-    ? (settings.ollamaProxyUrl.trim().replace(/\/$/, '') || OLLAMA_CLOUD.replace(/\/api$/, ''))
+    ? (effectiveProxyUrl(settings) || OLLAMA_CLOUD.replace(/\/api$/, ''))
     : OLLAMA_LOCAL.replace(/\/api$/, '');
-  const path = host === 'cloud' && settings.ollamaProxyUrl.trim() ? '/api/tags' : '/api/tags';
-  const url = `${base}${path}`;
+  const url = `${base}/api/tags`;
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (host === 'cloud' && settings.ollamaApiKey.trim()) {
@@ -366,15 +389,9 @@ async function openAiVision(
 
 function ollamaBase(settings: Settings, provider: 'ollama-cloud' | 'ollama-local') {
   if (provider === 'ollama-local') return OLLAMA_LOCAL;
-  const proxy = settings.ollamaProxyUrl.trim().replace(/\/$/, '');
+  const proxy = effectiveProxyUrl(settings);
   if (proxy) return `${proxy}/api`;
   return OLLAMA_CLOUD;
-}
-
-function isHostedApp(): boolean {
-  if (typeof window === 'undefined') return false;
-  const h = window.location.hostname;
-  return h.includes('github.io') || h.includes('pages.dev');
 }
 
 function ollamaHeaders(settings: Settings, provider: 'ollama-cloud' | 'ollama-local') {

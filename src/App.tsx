@@ -7,7 +7,7 @@ import { useSettings } from './hooks/useSettings';
 import { generateMission, speak, stopSpeaking } from './lib/ai';
 import type { Mission, MoodLevel, LogEntry, Screen, Settings, AiProvider } from './types';
 import {
-  VOICE_PRESETS, AI_PROVIDER_OPTIONS,
+  OLLAMA_PROXY_URL, VOICE_PRESETS, AI_PROVIDER_OPTIONS,
   OLLAMA_CLOUD_TEXT_MODELS, OLLAMA_CLOUD_VISION_MODELS,
   OLLAMA_LOCAL_TEXT_MODELS, OLLAMA_LOCAL_VISION_MODELS,
   OPENAI_TEXT_MODELS, OPENAI_VISION_MODELS,
@@ -513,11 +513,11 @@ function SettingsScreen({
       <p className="text-white/50 text-sm mb-1">Keys stay on this device only.</p>
       <p className="text-emerald-300/70 text-xs mb-4">Active: {providerSummary}</p>
 
-      <div className="glass rounded-2xl p-4 mb-4 border border-amber-300/20 bg-amber-400/5">
-        <p className="text-sm font-semibold text-amber-100 mb-1">📱 Using GitHub Pages?</p>
+      <div className="glass rounded-2xl p-4 mb-4 border border-emerald-300/20 bg-emerald-400/5">
+        <p className="text-sm font-semibold text-emerald-100 mb-1">📱 GitHub Pages</p>
         <p className="text-[11px] text-white/55 leading-relaxed">
-          Paste API keys <strong className="text-white/80">here in the app</strong> — not in GitHub repo Secrets (those don't reach the website).
-          OpenAI &amp; ElevenLabs work directly. Ollama Cloud needs the proxy URL below.
+          <strong className="text-white/80">Ollama Cloud is pre-configured</strong> via proxy — no Ollama key needed in the app.
+          Paste <strong className="text-white/80">OpenAI</strong> and <strong className="text-white/80">ElevenLabs</strong> keys below for voice &amp; vision.
         </p>
       </div>
 
@@ -570,11 +570,11 @@ function SettingsScreen({
                 placeholder="..." className="oq-input" autoComplete="off"
               />
             </Field>
-            <Field label="Proxy URL (for GitHub Pages)" hint="Deploy worker/ folder to Cloudflare — paste URL like https://your-worker.workers.dev">
+            <Field label="Proxy URL" hint={`Auto-enabled on GitHub Pages (${OLLAMA_PROXY_URL})`}>
               <input
                 value={settings.ollamaProxyUrl}
                 onChange={e => update({ ollamaProxyUrl: e.target.value })}
-                placeholder="https://offlinequest-ollama-proxy.xxx.workers.dev"
+                placeholder={OLLAMA_PROXY_URL}
                 className="oq-input"
               />
             </Field>
