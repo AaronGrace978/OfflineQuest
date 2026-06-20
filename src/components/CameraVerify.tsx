@@ -146,6 +146,9 @@ export function CameraVerify({
                     >
                       <div className={`text-xs font-bold mb-1 ${result.verified ? 'text-emerald-300' : 'text-amber-300'}`}>
                         {result.verified ? '✓ Quest verified' : '○ Keep exploring'}
+                        {result.provider && (
+                          <span className="font-normal text-white/40 ml-1">· {result.provider}</span>
+                        )}
                       </div>
                       <p className="text-white/90 text-sm leading-snug">{result.note}</p>
                     </motion.div>

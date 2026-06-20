@@ -5,8 +5,14 @@ import { missions, getRandomMission } from './data/missions';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { useSettings } from './hooks/useSettings';
 import { generateMission, speak, stopSpeaking } from './lib/ai';
-import type { Mission, MoodLevel, LogEntry, Screen, Settings } from './types';
-import { VOICE_PRESETS } from './types';
+import type { Mission, MoodLevel, LogEntry, Screen, Settings, AiProvider } from './types';
+import {
+  VOICE_PRESETS, AI_PROVIDER_OPTIONS,
+  OLLAMA_CLOUD_TEXT_MODELS, OLLAMA_CLOUD_VISION_MODELS,
+  OLLAMA_LOCAL_TEXT_MODELS, OLLAMA_LOCAL_VISION_MODELS,
+  OPENAI_TEXT_MODELS, OPENAI_VISION_MODELS,
+} from './types';
+import { testOllamaConnection } from './lib/providers';
 import {
   Background, MoodPicker, MissionCard, Timer, MOOD_OPTIONS, moodDelta,
   PrimaryButton, GhostButton,
@@ -50,7 +56,7 @@ export default function App() {
   const [pendingVision, setPendingVision] = useState<{ note: string; verified: boolean } | undefined>();
   const [log, setLog] = useLocalStorage<LogEntry[]>('oq-log', []);
   const [generating, setGenerating] = useState(false);
-  const { settings, update, hasOpenAi, hasElevenLabs } = useSettings();
+  const { settings, update, hasOpenAi, hasOllamaCloud, hasElevenLabs, hasAnyAi, providerSummary } = useSettings();
 
   const streak = useMemo(() => computeStreak(log), [log]);
 
@@ -59,7 +65,7 @@ export default function App() {
   const handleNewMission = () => setMission(getRandomMission(mission.id));
 
   const handleAiGenerate = async () => {
-    if (!hasOpenAi) { go('settings'); return; }
+    if (!hasAnyAi) { go('settings'); return; }
     setGenerating(true);
     try {
       const m = await generateMission(settings);
@@ -154,7 +160,8 @@ export default function App() {
             {screen === 'settings' && (
               <SettingsScreen
                 settings={settings} update={update}
-                hasOpenAi={hasOpenAi} hasElevenLabs={hasElevenLabs}
+                hasOpenAi={hasOpenAi} hasOllamaCloud={hasOllamaCloud}
+                hasElevenLabs={hasElevenLabs} providerSummary={providerSummary}
                 onBack={() => go('home')}
               />
             )}
@@ -434,27 +441,44 @@ function LogScreen({
 
 // ── SETTINGS ──────────────────────────────────────────────────
 function SettingsScreen({
-  settings, update, hasOpenAi, hasElevenLabs, onBack,
+  settings, update, hasOpenAi, hasOllamaCloud, hasElevenLabs, providerSummary, onBack,
 }: {
   settings: Settings;
   update: (p: Partial<Settings>) => void;
-  hasOpenAi: boolean; hasElevenLabs: boolean; onBack: () => void;
+  hasOpenAi: boolean; hasOllamaCloud: boolean; hasElevenLabs: boolean;
+  providerSummary: string; onBack: () => void;
 }) {
-  const [testing, setTesting] = useState(false);
+  const [testingVoice, setTestingVoice] = useState(false);
+  const [testingOllama, setTestingOllama] = useState<'cloud' | 'local' | null>(null);
+  const [ollamaStatus, setOllamaStatus] = useState<string | null>(null);
+
   const testVoice = async () => {
-    setTesting(true);
+    setTestingVoice(true);
     await speak(settings, 'Take a slow breath. The earth is steady beneath you, and so are you.', () => {});
-    setTimeout(() => setTesting(false), 1200);
+    setTimeout(() => setTestingVoice(false), 1200);
   };
+
+  const testOllama = async (host: 'cloud' | 'local') => {
+    setTestingOllama(host);
+    setOllamaStatus(null);
+    const r = await testOllamaConnection(host, settings.ollamaApiKey);
+    setOllamaStatus(r.message);
+    setTestingOllama(null);
+  };
+
+  const showOpenAi = settings.aiProvider === 'openai' || settings.aiProvider === 'auto';
+  const showOllamaCloud = settings.aiProvider === 'ollama-cloud' || settings.aiProvider === 'auto';
+  const showOllamaLocal = settings.aiProvider === 'ollama-local' || settings.aiProvider === 'auto';
 
   return (
     <div className="flex flex-col h-full px-5 pt-6">
       <BackBtn onClick={onBack} />
-      <h2 className="font-display text-3xl font-semibold text-white mt-4 mb-1">Settings</h2>
-      <p className="text-white/50 text-sm mb-5">Keys are stored only on this device, never uploaded.</p>
+      <h2 className="font-display text-3xl font-semibold text-white mt-4 mb-1">AI & Voice</h2>
+      <p className="text-white/50 text-sm mb-1">Keys stay on this device only.</p>
+      <p className="text-emerald-300/70 text-xs mb-5">Active: {providerSummary}</p>
 
       <div className="flex-1 overflow-y-auto no-scrollbar space-y-5 pb-6">
-        <Field label="Your name (optional)" hint="Personalizes your affirmations">
+        <Field label="Your name (optional)" hint="Personalizes affirmations">
           <input
             value={settings.affirmationName}
             onChange={e => update({ affirmationName: e.target.value })}
@@ -463,30 +487,160 @@ function SettingsScreen({
           />
         </Field>
 
-        <div className="glass rounded-2xl p-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold text-white">🧠 OpenAI</span>
-            <Badge ok={hasOpenAi} />
+        {/* ── AI Provider ── */}
+        <div className="glass rounded-2xl p-4 space-y-3">
+          <span className="text-sm font-semibold text-white">🤖 AI Provider</span>
+          <div className="grid grid-cols-1 gap-2">
+            {AI_PROVIDER_OPTIONS.map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => update({ aiProvider: opt.id as AiProvider })}
+                className={`text-left rounded-xl p-3 border transition-all ${
+                  settings.aiProvider === opt.id
+                    ? 'border-emerald-400/50 bg-emerald-400/10'
+                    : 'border-white/10 bg-white/5 hover:border-white/20'
+                }`}
+              >
+                <p className="text-sm font-semibold text-white">{opt.label}</p>
+                <p className="text-[11px] text-white/45 mt-0.5">{opt.desc}</p>
+              </button>
+            ))}
           </div>
-          <Field label="API key" hint="Powers affirmations, AI quests & vision">
-            <input
-              type="password" value={settings.openAiKey}
-              onChange={e => update({ openAiKey: e.target.value })}
-              placeholder="sk-..." className="oq-input" autoComplete="off"
-            />
-          </Field>
-          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
-            className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
-            Get an OpenAI key ↗
-          </a>
         </div>
 
+        {/* ── Ollama Cloud ── */}
+        {showOllamaCloud && (
+          <div className="glass rounded-2xl p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-white">🦙 Ollama Cloud</span>
+              <Badge ok={hasOllamaCloud} />
+            </div>
+            <p className="text-[11px] text-white/40 -mt-2">
+              Gemma 4, Kimi K2.5, GLM 4.7, GPT-OSS 120B — huge models via{' '}
+              <a href="https://ollama.com/search?c=cloud" target="_blank" rel="noreferrer" className="text-emerald-300/80 underline">ollama.com</a>
+            </p>
+            <Field label="API key" hint="From ollama.com/settings/keys">
+              <input
+                type="password" value={settings.ollamaApiKey}
+                onChange={e => update({ ollamaApiKey: e.target.value })}
+                placeholder="..." className="oq-input" autoComplete="off"
+              />
+            </Field>
+            <ModelSelect
+              label="Text model"
+              value={settings.ollamaTextModel}
+              onChange={v => update({ ollamaTextModel: v })}
+              options={OLLAMA_CLOUD_TEXT_MODELS}
+            />
+            <ModelSelect
+              label="Vision model"
+              value={settings.ollamaVisionModel}
+              onChange={v => update({ ollamaVisionModel: v })}
+              options={OLLAMA_CLOUD_VISION_MODELS}
+            />
+            <div className="flex gap-2">
+              <a href="https://ollama.com/settings/keys" target="_blank" rel="noreferrer"
+                className="text-xs text-emerald-300/80 hover:text-emerald-200 underline flex-1">
+                Get Ollama key ↗
+              </a>
+              <button
+                onClick={() => testOllama('cloud')}
+                disabled={testingOllama === 'cloud'}
+                className="text-xs text-white/60 hover:text-white disabled:opacity-50"
+              >
+                {testingOllama === 'cloud' ? 'Testing…' : 'Test connection'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Ollama Local ── */}
+        {showOllamaLocal && (
+          <div className="glass rounded-2xl p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-white">💻 Ollama Local</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-400/15 text-sky-300">No key</span>
+            </div>
+            <p className="text-[11px] text-white/40 -mt-2">
+              Runs on your PC at localhost:11434 — private, no API key needed.
+            </p>
+            <ModelSelect
+              label="Text model"
+              value={settings.ollamaTextModel}
+              onChange={v => update({ ollamaTextModel: v })}
+              options={OLLAMA_LOCAL_TEXT_MODELS}
+            />
+            <ModelSelect
+              label="Vision model"
+              value={settings.ollamaVisionModel}
+              onChange={v => update({ ollamaVisionModel: v })}
+              options={OLLAMA_LOCAL_VISION_MODELS}
+            />
+            <div className="flex gap-2 items-center">
+              <a href="https://ollama.com/download" target="_blank" rel="noreferrer"
+                className="text-xs text-emerald-300/80 hover:text-emerald-200 underline flex-1">
+                Download Ollama ↗
+              </a>
+              <button
+                onClick={() => testOllama('local')}
+                disabled={testingOllama === 'local'}
+                className="text-xs text-white/60 hover:text-white disabled:opacity-50"
+              >
+                {testingOllama === 'local' ? 'Testing…' : 'Test local'}
+              </button>
+            </div>
+            <p className="text-[10px] text-white/35">
+              Pull models first: <code className="text-emerald-300/60">ollama pull gemma4:12b</code>
+            </p>
+          </div>
+        )}
+
+        {ollamaStatus && (
+          <p className={`text-xs px-3 py-2 rounded-xl ${ollamaStatus.includes('connected') || ollamaStatus.includes('found') ? 'bg-emerald-400/10 text-emerald-300' : 'bg-rose-400/10 text-rose-300'}`}>
+            {ollamaStatus}
+          </p>
+        )}
+
+        {/* ── OpenAI ── */}
+        {showOpenAi && (
+          <div className="glass rounded-2xl p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-white">🧠 OpenAI</span>
+              <Badge ok={hasOpenAi} />
+            </div>
+            <Field label="API key" hint="GPT-4o — best vision, fast affirmations">
+              <input
+                type="password" value={settings.openAiKey}
+                onChange={e => update({ openAiKey: e.target.value })}
+                placeholder="sk-..." className="oq-input" autoComplete="off"
+              />
+            </Field>
+            <ModelSelect
+              label="Text model"
+              value={settings.openAiTextModel}
+              onChange={v => update({ openAiTextModel: v })}
+              options={OPENAI_TEXT_MODELS}
+            />
+            <ModelSelect
+              label="Vision model"
+              value={settings.openAiVisionModel}
+              onChange={v => update({ openAiVisionModel: v })}
+              options={OPENAI_VISION_MODELS}
+            />
+            <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
+              className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
+              Get OpenAI key ↗
+            </a>
+          </div>
+        )}
+
+        {/* ── ElevenLabs ── */}
         <div className="glass rounded-2xl p-4 space-y-4">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold text-white">🎙️ ElevenLabs voice</span>
             <Badge ok={hasElevenLabs} />
           </div>
-          <Field label="API key" hint="Ultra-realistic voice. Without it, your device's voice is used.">
+          <Field label="API key" hint="Ultra-realistic voice. Without it, device voice is used.">
             <input
               type="password" value={settings.elevenLabsKey}
               onChange={e => update({ elevenLabsKey: e.target.value })}
@@ -508,7 +662,7 @@ function SettingsScreen({
           </Field>
           <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer"
             className="text-xs text-emerald-300/80 hover:text-emerald-200 underline">
-            Get an ElevenLabs key ↗
+            Get ElevenLabs key ↗
           </a>
         </div>
 
@@ -520,9 +674,9 @@ function SettingsScreen({
           <Toggle on={settings.voiceEnabled} onClick={() => update({ voiceEnabled: !settings.voiceEnabled })} />
         </div>
 
-        <button onClick={testVoice} disabled={testing}
+        <button onClick={testVoice} disabled={testingVoice}
           className="w-full py-3 rounded-2xl glass text-white/80 text-sm font-medium hover:text-white disabled:opacity-50">
-          {testing ? '🔊 Speaking…' : '▶ Test voice'}
+          {testingVoice ? '🔊 Speaking…' : '▶ Test voice'}
         </button>
       </div>
 
@@ -541,6 +695,27 @@ function SettingsScreen({
         .oq-input:focus { border-color: rgba(52,211,153,0.6); }
       `}</style>
     </div>
+  );
+}
+
+function ModelSelect({
+  label, value, onChange, options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: readonly { id: string; name: string; tag: string }[];
+}) {
+  return (
+    <Field label={label}>
+      <select value={value} onChange={e => onChange(e.target.value)} className="oq-input">
+        {options.map(m => (
+          <option key={m.id} value={m.id} className="bg-stone-900">
+            {m.name} — {m.tag}
+          </option>
+        ))}
+      </select>
+    </Field>
   );
 }
 
@@ -573,10 +748,11 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-function Badge({ ok }: { ok: boolean }) {
+function Badge({ ok, label }: { ok: boolean; label?: string }) {
+  const text = ok ? (label ?? 'Connected') : 'Not set';
   return (
     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${ok ? 'bg-emerald-400/20 text-emerald-300' : 'bg-white/10 text-white/40'}`}>
-      {ok ? 'Connected' : 'Not set'}
+      {text}
     </span>
   );
 }
