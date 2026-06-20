@@ -65,15 +65,18 @@ export function resolveProvider(settings: Settings, task: AiTask): ResolvedProvi
   const s = withEffectiveProxy(settings);
   const pref = s.aiProvider;
 
-  if (pref === 'openai') return hasOpenAi(s) ? 'openai' : null;
+  if (pref === 'openai') {
+    if (task === 'vision' && effectiveProxyUrl(s)) return 'ollama-cloud';
+    return hasOpenAi(s) ? 'openai' : null;
+  }
   if (pref === 'ollama-cloud') return hasOllamaCloud(s) ? 'ollama-cloud' : null;
   if (pref === 'ollama-local') return 'ollama-local';
 
-  // Auto vision: on GitHub Pages prefer Ollama (proxy configured), else OpenAI, else local
+  // Auto vision: proxy → Ollama cloud → OpenAI → local
   if (task === 'vision') {
-    if (isHostedApp() && hasOllamaCloud(s)) return 'ollama-cloud';
-    if (hasOpenAi(s)) return 'openai';
+    if (effectiveProxyUrl(s)) return 'ollama-cloud';
     if (hasOllamaCloud(s)) return 'ollama-cloud';
+    if (hasOpenAi(s)) return 'openai';
     if (wantsOllamaLocal(s)) return 'ollama-local';
     return null;
   }
@@ -206,30 +209,42 @@ export async function chatVisionJson<T>(
   imageDataUrl: string,
 ): Promise<JsonResult<T> | null> {
   const s = withEffectiveProxy(settings);
-  const provider = resolveProvider(s, 'vision');
-  if (!provider) return null;
-
   const b64 = dataUrlToBase64(imageDataUrl);
+  const proxyUp = effectiveProxyUrl(s).length > 0;
 
-  if (provider === 'openai') {
+  // Vision priority: Ollama proxy (GitHub Pages) → OpenAI → Ollama local
+  if (proxyUp) {
+    try {
+      return await ollamaVisionWithFallback<T>(s, system, userText, b64);
+    } catch (err) {
+      console.warn('Ollama vision via proxy failed:', err);
+      if (!hasOpenAi(s)) throw err;
+    }
+  }
+
+  if (hasOpenAi(s)) {
     try {
       const raw = await openAiVision(s, s.openAiVisionModel, system, userText, imageDataUrl);
       return { data: parseJson<T>(raw), provider: `OpenAI · ${s.openAiVisionModel}` };
     } catch (err) {
       console.warn('OpenAI vision failed:', err);
-      if (s.aiProvider === 'auto' && hasOllamaCloud(s)) {
+      if (proxyUp) {
         return ollamaVisionWithFallback<T>(s, system, userText, b64);
       }
       throw err;
     }
   }
 
-  if (provider === 'ollama-local') {
-    const raw = await ollamaVision(s, 'ollama-local', s.ollamaVisionModel, system, userText, b64);
-    return { data: parseJson<T>(raw), provider: `Ollama Local · ${s.ollamaVisionModel}` };
+  if (s.aiProvider === 'ollama-local' || wantsOllamaLocal(s)) {
+    try {
+      const raw = await ollamaVision(s, 'ollama-local', s.ollamaVisionModel, system, userText, b64);
+      return { data: parseJson<T>(raw), provider: `Ollama Local · ${s.ollamaVisionModel}` };
+    } catch (err) {
+      console.warn('Ollama local vision failed:', err);
+    }
   }
 
-  return ollamaVisionWithFallback<T>(s, system, userText, b64);
+  return null;
 }
 
 async function ollamaVisionWithFallback<T>(
@@ -329,6 +344,36 @@ export async function testOpenAiConnection(settings: Settings): Promise<{ ok: bo
     return { ok: false, message: `OpenAI error: HTTP ${res.status}` };
   } catch {
     return { ok: false, message: 'Cannot reach OpenAI — check connection or ad-blocker.' };
+  }
+}
+
+/** Quick vision check — sends a tiny test image through the same route as camera verify. */
+export async function testVisionConnection(settings: Settings): Promise<{ ok: boolean; message: string }> {
+  const s = withEffectiveProxy(settings);
+  const proxyUp = effectiveProxyUrl(s).length > 0;
+  if (!proxyUp && !hasOpenAi(s) && s.aiProvider !== 'ollama-local') {
+    return { ok: false, message: 'No vision provider — add OpenAI key or use on GitHub Pages (Ollama proxy auto-enabled).' };
+  }
+
+  // 64×64 green JPEG — small enough for any provider
+  const testImage =
+    'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGfAP/Z';
+
+  const system =
+    'Return STRICT JSON only: {"verified": boolean, "note": "one short sentence"}.';
+  const user = 'Mission: notice something green in nature. Does this photo show it?';
+
+  try {
+    const result = await chatVisionJson<{ verified: boolean; note: string }>(s, system, user, testImage);
+    if (!result) {
+      return { ok: false, message: 'Vision returned no result — check API keys or proxy.' };
+    }
+    return {
+      ok: true,
+      message: `Vision OK via ${result.provider} — "${result.data.note?.slice(0, 60) || 'connected'}"`,
+    };
+  } catch (err) {
+    return { ok: false, message: `Vision failed: ${(err as Error).message}` };
   }
 }
 

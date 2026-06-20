@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Mission, Settings } from '../types';
 import { analyzeImage, type VisionResult } from '../lib/ai';
+import { compressImageForVision } from '../lib/image';
 
 export function CameraVerify({
   settings, mission, onResult,
@@ -55,14 +56,14 @@ export function CameraVerify({
     const video = videoRef.current;
     if (!video) return;
     const canvas = document.createElement('canvas');
-    const maxW = 768;
+    const maxW = 512;
     const scale = Math.min(1, maxW / video.videoWidth);
     canvas.width = video.videoWidth * scale;
     canvas.height = video.videoHeight * scale;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
     setShot(dataUrl);
     stopStream();
   };
@@ -70,10 +71,19 @@ export function CameraVerify({
   const analyze = async () => {
     if (!shot) return;
     setAnalyzing(true);
+    setError(null);
     try {
-      const r = await analyzeImage(settings, mission, shot);
+      const compressed = await compressImageForVision(shot);
+      const r = await analyzeImage(settings, mission, compressed);
       setResult(r);
       onResult?.(r);
+      if (r.note.startsWith('Vision failed:')) {
+        setError(r.note);
+      }
+    } catch (err) {
+      const msg = `Vision failed: ${(err as Error).message}`;
+      setError(msg);
+      setResult({ verified: false, note: msg });
     } finally {
       setAnalyzing(false);
     }

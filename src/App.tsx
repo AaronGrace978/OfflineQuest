@@ -12,7 +12,7 @@ import {
   OLLAMA_LOCAL_TEXT_MODELS, OLLAMA_LOCAL_VISION_MODELS,
   OPENAI_TEXT_MODELS, OPENAI_VISION_MODELS,
 } from './types';
-import { testOllamaConnection, testOpenAiConnection, testElevenLabsConnection } from './lib/providers';
+import { testOllamaConnection, testOpenAiConnection, testElevenLabsConnection, testVisionConnection, effectiveProxyUrl } from './lib/providers';
 import {
   Background, MoodPicker, MissionCard, Timer, MOOD_OPTIONS, moodDelta,
   PrimaryButton, GhostButton,
@@ -450,6 +450,7 @@ function SettingsScreen({
 }) {
   const [testingVoice, setTestingVoice] = useState(false);
   const [testingOllama, setTestingOllama] = useState<'cloud' | 'local' | null>(null);
+  const [testingVision, setTestingVision] = useState(false);
   const [testingAll, setTestingAll] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [statusOk, setStatusOk] = useState(false);
@@ -489,10 +490,13 @@ function SettingsScreen({
       parts.push(r.message);
       if (r.ok) anyOk = true;
     }
-    if (settings.ollamaApiKey.trim() || settings.ollamaProxyUrl.trim()) {
+    if (settings.ollamaApiKey.trim() || settings.ollamaProxyUrl.trim() || effectiveProxyUrl(settings)) {
       const r = await testOllamaConnection(settings, 'cloud');
       parts.push(r.message);
       if (r.ok) anyOk = true;
+      const vr = await testVisionConnection(settings);
+      parts.push(vr.message);
+      if (vr.ok) anyOk = true;
     }
     if (!parts.length) {
       showStatus(false, 'No API keys entered yet — paste keys below, then tap Test all.');
@@ -590,7 +594,7 @@ function SettingsScreen({
               onChange={v => update({ ollamaVisionModel: v })}
               options={OLLAMA_CLOUD_VISION_MODELS}
             />
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <a href="https://ollama.com/settings/keys" target="_blank" rel="noreferrer"
                 className="text-xs text-emerald-300/80 hover:text-emerald-200 underline flex-1">
                 Get Ollama key ↗
@@ -601,6 +605,19 @@ function SettingsScreen({
                 className="text-xs text-white/60 hover:text-white disabled:opacity-50"
               >
                 {testingOllama === 'cloud' ? 'Testing…' : 'Test connection'}
+              </button>
+              <button
+                onClick={async () => {
+                  setTestingVision(true);
+                  setStatusMsg(null);
+                  const r = await testVisionConnection(settings);
+                  showStatus(r.ok, r.message);
+                  setTestingVision(false);
+                }}
+                disabled={testingVision}
+                className="text-xs text-white/60 hover:text-white disabled:opacity-50"
+              >
+                {testingVision ? 'Testing…' : 'Test vision'}
               </button>
             </div>
           </div>
